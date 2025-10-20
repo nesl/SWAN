@@ -1,6 +1,6 @@
 class Constants:
-    IMAGE_WIDTH = 1920
-    IMAGE_HEIGHT = 1080
+    IMAGE_WIDTH = 1280
+    IMAGE_HEIGHT = 720
     
 
 const = Constants

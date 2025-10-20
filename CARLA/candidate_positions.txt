@@ -1,0 +1,9 @@
+cam_transform = carla.Transform(
+        carla.Location(x=196, y=187, z=9),  # Height to view town
+        carla.Rotation(pitch=-44, yaw=56, roll=2.37)
+    )
+
+cam_transform = carla.Transform(
+        carla.Location(x=325, y=172, z=14),  # Height to view town
+        carla.Rotation(pitch=-36, yaw=85, roll=0)
+    )

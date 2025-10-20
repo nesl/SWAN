@@ -12,10 +12,10 @@ target_object_actors = []
 
 # Returns image
 def process_image(image):
-    pass
-    # array = np.frombuffer(image.raw_data, dtype=np.uint8)
-    # array = array.reshape((image.height, image.width, 4))[:, :, :3]
-    # cv2.imwrite(f'./data/{str(frame_iter).zfill(5)}.png', array)
+
+    array = np.frombuffer(image.raw_data, dtype=np.uint8)
+    array = array.reshape((image.height, image.width, 4))[:, :, :3]
+    cv2.imwrite(f'./data/{str(frame_iter).zfill(5)}.png', array)
 
 from collections import defaultdict
 def process_sem(image):

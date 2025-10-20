@@ -1,9 +1,7 @@
-import carla
-import time
-import json
 import random
+import carla
+import json
 import argparse
-
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -66,8 +64,6 @@ def spawn_walkers(world, blueprint_library, num_walkers):
     return spawned_walkers, spawned_controllers
 
 
-
-
 def main(args):
     random.seed(args.seed)
     client = carla.Client('localhost', 2000)
@@ -89,22 +85,20 @@ def main(args):
         print(f"SPAWNED {len(vehicle_actors)}")
         walker_actors, controllers = spawn_walkers(world, blueprint_library, num_walkers=args.num_walkers)
         all_actors.extend(walker_actors)
-        print(len(walker_actors))
+
         for i in range(10000):
+            w_frame = world.get_snapshot().frame
             if i == 10:
                 traffic_manager.global_percentage_speed_difference(0.0)
-            else:
-                result_list = []
-                for actor in all_actors:
-                    actor_dict = {}
-                    actor_dict['id'] = actor.id
-                    actor_dict['type'] = actor.type_id
-                    bbox = actor.bounding_box
-                    verts = [[v.x, v.y, v.z] for v in bbox.get_world_vertices(actor.get_transform())]
-                    actor_dict['bbox'] = verts
-                    result_list.append(actor_dict)
-                with open(f'data/{str(i).zfill(6)}_gt.json', 'w') as handle:
-                    json.dump(result_list, handle, indent=4)
+   
+            spectator = world.get_spectator()
+            transform = spectator.get_transform()
+            location = transform.location
+            rotation = transform.rotation
+            print("Frame", i)
+            print(f'Frame {i} location {location.x}, {location.y}, {location.z}')
+            print(f'Frame {i} rotation {rotation.pitch}, {rotation.yaw}, {rotation.roll}')
+                
             world.tick()
     finally:
         print('\nCleaning up actors...')
@@ -118,8 +112,8 @@ def main(args):
             controller.stop()
         # 3. Destroy actors safely
         client.apply_batch([carla.command.DestroyActor(x) for x in all_actors])
-
         print('Cleanup done, exiting cleanly.')
+
 
 if __name__ == '__main__':
     args = parse_args()
