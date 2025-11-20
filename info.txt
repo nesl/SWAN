@@ -1,0 +1,10 @@
+docker run -d --gpus all --shm-size=150gb \
+    -v /data/jason/Modern_UniM2AE/mmdetection3d:/workspace/mmdetection3d \
+    -v /data/jason/nuScenes/:/workspace/mmdetection3d/data/nuscenes \
+    --name mmdet_container \
+    mmdet:latest \
+    sleep infinity
+
+# New installs:
+pip3 install timm
+
