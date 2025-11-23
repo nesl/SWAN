@@ -4,7 +4,7 @@ _base_ = [
     '../../../configs/_base_/default_runtime.py', # Why does including this help resolve the mmengine registry problem??
 ]
 custom_imports = dict(
-    imports=['projects.UniM2AE'], allow_failed_imports=False)
+    imports=['projects.UniM2AE', 'projects.UniM2AE.utils'], allow_failed_imports=False)
 # -------------------model--------------------
 voxel_size = (0.5, 0.5, 4)
 sparse_shape = (200, 200, 2)
@@ -303,6 +303,13 @@ default_hooks = dict(
         max_keep_ckpts=3,    # (Optional) keep only 3 recent checkpoints
     )
 )
+custom_hooks = [
+    dict(
+        type='UpdateEpochHook',
+        priority='NORMAL'
+    )
+]
+
 # runtime settings
 # workflow = [("train", 1)]
 # checkpoint_config = dict(

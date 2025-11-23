@@ -5,6 +5,7 @@ ENV MMCV_WITH_OPS=1
 RUN pip install -U openmim
 RUN mim install mmengine
 RUN pip install ninja
+# CHANGE TO YOUR GPU ARCHITECTURE
 RUN MMCV_CUDA_ARGS='-gencode=arch=compute_90,code=sm_90' pip install mmcv==2.1.0 --no-binary mmcv
 RUN mim install 'mmdet>=3.0.0'
 RUN mim install "mmdet3d>=1.1.0"
@@ -18,4 +19,4 @@ WORKDIR /workspace
 WORKDIR /workspace/mmdetection3d
 RUN pip install timm
 RUN pip install torch-scatter -f https://data.pyg.org/whl/torch-2.1.0+cu121.html
-RUN export PYTHONPATH="/workspace/mmdetection3d:$PYTHONPATH"
+ENV PYTHONPATH="/workspace/mmdetection3d:${PYTHONPATH}"

@@ -6,6 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from mmcv.cnn import build_conv_layer, build_norm_layer
 import time
+from mmengine.dist import get_rank
 def show_image(image, title=''):
     imagenet_mean = np.array([0.485, 0.456, 0.406])
     imagenet_std = np.array([0.229, 0.224, 0.225])
@@ -17,7 +18,7 @@ def show_image(image, title=''):
     plt.axis('off')
     return
 
-def vis_image(ori_img, pred_img, mask, model, out_dir):
+def vis_image(ori_img, pred_img, mask, model, out_dir, sample_idx):
     ori_img = model.camera_decoder.patchify(ori_img)
     mean = ori_img.mean(dim=-1, keepdim=True)
     var = ori_img.var(dim=-1, keepdim=True)
@@ -28,7 +29,6 @@ def vis_image(ori_img, pred_img, mask, model, out_dir):
     pred_img = pred_img * (var + 1.e-6)**.5 + mean
     y = model.camera_decoder.unpatchify(pred_img)
     y = torch.einsum('nchw->nhwc', y).detach().cpu()
-
     # visualize the mask
     mask = mask.detach()
     mask = mask.unsqueeze(-1).repeat(1, 1, model.camera_decoder.final_patch_size**2 *3)  # (N, H*W, p*p*3)
@@ -57,7 +57,7 @@ def vis_image(ori_img, pred_img, mask, model, out_dir):
         plt.subplot(6, 4, i*4+4)
         show_image(im_paste[i], "reconstruction + visible")
 
-    plt.savefig(f"{out_dir}.png")
+    plt.savefig(f"{out_dir}/cam/{sample_idx}.png")
 
 
 @MODELS.register_module()
@@ -114,6 +114,8 @@ class UniM2AE(DynamicVoxelNet):
             build_norm_layer(norm_cfg, 192)[1],
             nn.ReLU(inplace=True),
         )
+        self.sample_idx = 0
+        self.epoch = 0
 
     
     def extract_feat(self, batch_inputs_dict):
@@ -130,40 +132,48 @@ class UniM2AE(DynamicVoxelNet):
         return lidar_x, lidar_volume_embed
     
     @torch.no_grad()
-    def test_pretrain(self, batched_inputs_dict, batched_input_metas,
-                      out_dir):
+    def test_pretrain(self,  batch_inputs_dict,
+                batch_samples_dict,
+                      out_dir, sample_idx=0):
         """Test function without augmentaiton."""
-        batch_size = len(points)
+        batch_size = len(batch_inputs_dict['points'])
         vx, vy, vz = self.middle_encoder.sparse_shape
 
-        lidar_x, lidar_volume_embed = self.extract_feat(batched_inputs_dict)
-        
-        imgs = batched_inputs_dict.get('imgs')
+        batched_input_metas = [item.metainfo for item in batch_samples_dict]
 
-        B, N, C, H, W = img.size()
-        img = img.view(B * N, C, H, W)
-        camera_x, camera_mask, camera_ids_restore = self.camera_encoder["backbone"](img, camera_only=True)
+        # Standard forward pass 
+        lidar_x, lidar_volume_embed = self.extract_feat(batch_inputs_dict)
+
+        imgs = batch_inputs_dict.get('imgs', None)
+        imgs = torch.transpose(torch.transpose(imgs, 2, 3), 3, 4)
+        B, N, C, H, W = imgs.size() # CARE SUS???
+        imgs = imgs.view(B * N, C, H, W)
+
+        camera_x, camera_mask, camera_ids_restore = self.camera_encoder["backbone"](imgs, camera_only=True)
+
         camera_volume_embed, camera_x = self.camera_encoder["vtransform"](
             camera_x, 
             (B, N, C, H, W),
             camera_ids_restore, 
-            batched_inputs_metas,
+            batched_input_metas
         )
 
         cam_proj_feat, lidar_proj_feat = self.fusion_module(
             [lidar_volume_embed, camera_volume_embed], 
             lidar_x,
-            batched_input_metas
+            batched_input_metas,
         )
-        
         cam_pred = self.relu(cam_proj_feat + camera_x.view(B*N, -1, H//32, W//32))
         cam_pred = cam_pred.flatten(2).permute(0, 2, 1)
         cam_pred = self.camera_decoder(cam_pred, camera_ids_restore)
+
         
         
-        vis_image(img, cam_pred, camera_mask, self, out_dir)
+        vis_image(imgs, cam_pred, camera_mask, self, out_dir, sample_idx=sample_idx)
         
-        outs = self.bbox_head(lidar_proj_feat, show=True)
+        lidar_x[0]['output'] = lidar_proj_feat
+
+        outs = self.bbox_head(lidar_x[0], show=True)
         pred_dict = outs[0] # unsure
         voxel_coors = pred_dict["voxel_coors"]
         masked_voxel_coors = pred_dict["masked_voxel_coors"]
@@ -272,6 +282,7 @@ class UniM2AE(DynamicVoxelNet):
                 out_dir=None,
                 **kwargs,
                 ):
+        
         batched_input_metas = [item.metainfo for item in batch_samples_dict]
         if return_loss:
             lidar_x, lidar_volume_embed = self.extract_feat(batch_inputs_dict)
@@ -297,6 +308,11 @@ class UniM2AE(DynamicVoxelNet):
             cam_pred = self.relu(cam_proj_feat + camera_x.view(B*N, -1, H//32, W//32))
             cam_pred = cam_pred.flatten(2).permute(0, 2, 1)
             cam_pred = self.camera_decoder(cam_pred, camera_ids_restore)
+
+            if get_rank() == 0 and self.sample_idx % 500 == 0:
+                vis_image(imgs[0:6], cam_pred[0:6], camera_mask[0:6], self, 'viz', sample_idx=f'{self.epoch}_{self.sample_idx}.png')
+            if get_rank() == 0:
+                self.sample_idx += 1
 
             lidar_x[0]['output'] = lidar_proj_feat
 

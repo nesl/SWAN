@@ -46,13 +46,14 @@ class ImageAug3D:
         self.interpolation = interpolation_dict[interpolation]
 
     def sample_augmentation(self, results):
-        W, H = results["ori_shape"]
+        H, W = results['ori_shape']
         fH, fW = self.final_dim
         if self.is_train:
             resize = np.random.uniform(*self.resize_lim)
             resize_dims = (int(W * resize), int(H * resize))
             newW, newH = resize_dims
-            crop_h = int((1 - np.random.uniform(*self.bot_pct_lim)) * newH) - fH
+            crop_h = int(
+                (1 - np.random.uniform(*self.bot_pct_lim)) * newH) - fH
             crop_w = int(np.random.uniform(0, max(0, newW - fW)))
             crop = (crop_w, crop_h, crop_w + fW, crop_h + fH)
             flip = False
@@ -68,37 +69,34 @@ class ImageAug3D:
             flip = False
         return resize, resize_dims, crop, flip
 
-    def img_transform(
-        self, img, rotation, translation, resize, resize_dims, crop, flip
-    ):
+    def img_transform(self, img, rotation, translation, resize, resize_dims,
+                      crop, flip, rotate):
         # adjust image
         img = Image.fromarray(img.astype('uint8'), mode='RGB')
-        img = img.resize(resize_dims, 3)
+        img = img.resize(resize_dims)
         img = img.crop(crop)
         if flip:
             img = img.transpose(method=Image.FLIP_LEFT_RIGHT)
+        img = img.rotate(rotate)
 
         # post-homography transformation
         rotation *= resize
         translation -= torch.Tensor(crop[:2])
-        
         if flip:
             A = torch.Tensor([[-1, 0], [0, 1]])
             b = torch.Tensor([crop[2] - crop[0], 0])
             rotation = A.matmul(rotation)
             translation = A.matmul(translation) + b
-        theta = 0.
-        A = torch.Tensor(
-            [
-                [np.cos(theta), np.sin(theta)],
-                [-np.sin(theta), np.cos(theta)],
-            ]
-        )
+        theta = rotate / 180 * np.pi
+        A = torch.Tensor([
+            [np.cos(theta), np.sin(theta)],
+            [-np.sin(theta), np.cos(theta)],
+        ])
         b = torch.Tensor([crop[2] - crop[0], crop[3] - crop[1]]) / 2
         b = A.matmul(-b) + b
         rotation = A.matmul(rotation)
         translation = A.matmul(translation) + b
-        
+
         return img, rotation, translation
 
     def __call__(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -120,6 +118,7 @@ class ImageAug3D:
                 resize_dims=resize_dims,
                 crop=crop,
                 flip=flip,
+                rotate=0
             )
             
             transform = torch.eye(4)
@@ -132,7 +131,7 @@ class ImageAug3D:
                     'crop': crop,
                     'flip': flip})
             transforms.append(transform.numpy())
-                
+
         data["img"] = new_imgs
         data["img_shape"] = new_imgs[0].size
         if "depth_maps" in data:
