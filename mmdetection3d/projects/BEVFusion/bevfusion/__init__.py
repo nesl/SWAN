@@ -9,6 +9,7 @@ from .transforms_3d import (BEVFusionGlobalRotScaleTrans,
 from .transfusion_head import ConvFuser, TransFusionHead
 from .utils import (BBoxBEVL1Cost, HeuristicAssigner3D, HungarianAssigner3D,
                     IoU3DCost)
+from .unim2ae import UniM2AE_BEVFusion
 
 __all__ = [
     'BEVFusion', 'TransFusionHead', 'ConvFuser', 'ImageAug3D', 'GridMask',
@@ -16,5 +17,5 @@ __all__ = [
     'HeuristicAssigner3D', 'DepthLSSTransform', 'LSSTransform',
     'BEVLoadMultiViewImageFromFiles', 'BEVFusionSparseEncoder',
     'TransformerDecoderLayer', 'BEVFusionRandomFlip3D',
-    'BEVFusionGlobalRotScaleTrans'
+    'BEVFusionGlobalRotScaleTrans', 'UniM2AE_BEVFusion'
 ]

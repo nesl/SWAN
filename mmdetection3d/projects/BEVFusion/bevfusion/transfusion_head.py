@@ -150,7 +150,6 @@ class TransFusionHead(nn.Module):
 
         self.init_weights()
         self._init_assigner_sampler()
-
         # Position Embedding for Cross-Attention, which is re-used during training # noqa: E501
         x_size = self.test_cfg['grid_size'][0] // self.test_cfg[
             'out_size_factor']

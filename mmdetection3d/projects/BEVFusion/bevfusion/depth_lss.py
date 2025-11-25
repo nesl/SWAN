@@ -139,11 +139,13 @@ class BaseViewTransform(nn.Module):
                 & (geom_feats[:, 2] < self.nx[2]))
         x = x[kept]
         geom_feats = geom_feats[kept]
-
         x = bev_pool(x, geom_feats, B, self.nx[2], self.nx[0], self.nx[1])
 
         # collapse Z
-        final = torch.cat(x.unbind(dim=2), 1)
+        if hasattr(self, 'keep_z') and self.keep_z:
+            final = x.permute(0, 1, 3, 4, 2)
+        else:
+            final = torch.cat(x.unbind(dim=2), 1)
 
         return final
 
@@ -345,6 +347,7 @@ class DepthLSSTransform(BaseDepthTransform):
         zbound: Tuple[float, float, float],
         dbound: Tuple[float, float, float],
         downsample: int = 1,
+        keep_z = False
     ) -> None:
         """Compared with `LSSTransform`, `DepthLSSTransform` adds sparse depth
         information from lidar points into the inputs of the `depthnet`."""
@@ -358,6 +361,7 @@ class DepthLSSTransform(BaseDepthTransform):
             zbound=zbound,
             dbound=dbound,
         )
+        self.keep_z = keep_z
         self.dtransform = nn.Sequential(
             nn.Conv2d(1, 8, 1),
             nn.BatchNorm2d(8),

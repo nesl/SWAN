@@ -131,15 +131,27 @@ class SSTv2(nn.Module):
 
         # If masked we want to send the output to the decoder and not a FPN how requires dense bev image
         if not self.masked:
-            output, indices_back, _ = self.recover_bev(output, voxel_info['voxel_coors'], batch_size)
+            # output, indices_back, _ = self.recover_bev(output, voxel_info['voxel_coors'], batch_size)
+
+            # if self.num_attached_conv > 0:
+            #     for conv in self.conv_layer:
+            #         output = conv(output)
+
+            # output_list = []
+            # output_list.append(output)
+            # return output_list
+            if len(self.output_shape) == 2:
+                output, indices_back, _ = self.recover_bev(output, voxel_info['voxel_coors'], batch_size)
+            elif len(self.output_shape) == 3:
+                output, indices_back, _ = self.recover_volume(output, voxel_info['voxel_coors'], batch_size)
+            else:
+                raise ValueError("The output_shape should be [H, W, Z] or [H, W]")
 
             if self.num_attached_conv > 0:
                 for conv in self.conv_layer:
                     output = conv(output)
 
-            output_list = []
-            output_list.append(output)
-            return output_list
+            return output
         else:
             if self.num_attached_conv != 0:
                 if len(self.output_shape) == 2:
@@ -233,7 +245,6 @@ class SSTv2(nn.Module):
             indices = indices.type(torch.long)
             voxels = voxel_feat[batch_mask, :] #[n, c]
             voxels = voxels.t() #[c, n]
-
             canvas[:, indices] = voxels
 
             batch_canvas.append(canvas)

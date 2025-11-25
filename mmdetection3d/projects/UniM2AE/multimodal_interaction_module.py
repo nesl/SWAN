@@ -27,6 +27,7 @@ class MMIM(nn.Module):
         positional_encoding,
         strides,
         encoder,
+        pretrain=True
     ):
         super(MMIM, self).__init__()
         
@@ -74,7 +75,8 @@ class MMIM(nn.Module):
         
         # v1 projection method
         # +----------------------------------------------------------------
-        self.proj_cam_downsample = nn.Conv2d(fusion_channels, 768, kernel_size=1)
+        if pretrain:
+            self.proj_cam_downsample = nn.Conv2d(fusion_channels, 768, kernel_size=1)
         # +----------------------------------------------------------------
         
         self._init_weights()
