@@ -19,6 +19,9 @@ def show_image(image, title=''):
     return
 
 def vis_image(ori_img, pred_img, mask, model, out_dir, sample_idx):
+    from pathlib import Path
+    Path('viz/chamf').mkdir(parents=True, exist_ok=True)
+    Path('viz/cam').mkdir(parents=True, exist_ok=True)
     ori_img = model.camera_decoder.patchify(ori_img)
     mean = ori_img.mean(dim=-1, keepdim=True)
     var = ori_img.var(dim=-1, keepdim=True)
