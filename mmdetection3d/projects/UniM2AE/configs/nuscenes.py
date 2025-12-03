@@ -109,7 +109,8 @@ val_pipeline = [
         test_mode=True,
         use_dim=[0, 1, 2, 3, 4]),
     dict(type='LoadAnnotations3D', with_bbox_3d=True, with_label_3d=True),
-    dict(type='ImageAug_UniM2AE', 
+    # Originally it is ImageAug_UniM2AE, but it doesnt exist 
+    dict(type='ImageAug3D_UniM2AE', 
          final_dim=[256, 704],
          resize_lim=[0.48, 0.48],
          bot_pct_lim=[0.0, 0.0],

@@ -10,7 +10,7 @@ log_config = dict(
         dict(type='TensorboardLoggerHook')
     ])
 # yapf:enable
-dist_params = dict(backend='nccl')
+dist_params = dict(backend='nccl', timeout=1080000)
 log_level = 'INFO'
 work_dir = None
 # load_from = 'pretrained/bevmae_lidar_cross_vanilla_imageloss0.75.pth'

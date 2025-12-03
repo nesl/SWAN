@@ -8,9 +8,11 @@ from .transforms_3d import ImageAug3D_UniM2AE, RandomFlip3Dv2, ImageNormalize
 from .positional_encoding import SinePositionalEncoding3D
 from .sst_models import SSTv2, SSTInputLayerV2Masked, SSTInputLayerV2, SSTv2Decoder, DynamicVFE_New
 from .utils import UpdateEpochHook
+from .convnext import MAEConvNeXtEncoder, MAEConvNeXtDecoder
 
 __all__ = [
     'MSDeformAttnPixelDecoder3D', 'MultiScaleDeformableAttention3D', 'MMIM', 'ReconstructionHead', 'SwinTransformer',
     'UniM2AE', 'VolumeTransform', 'SinePositionalEncoding3D', 'ImageAug3D_UniM2AE', 'RandomFlip3Dv2', 'ImageNormalize',
-    'SSTv2', 'SSTInputLayerV2' 'SSTInputLayerV2Masked', 'SSTv2Decoder', 'DynamicVFE_New', 'UpdateEpochHook'
+    'SSTv2', 'SSTInputLayerV2' 'SSTInputLayerV2Masked', 'SSTv2Decoder', 'DynamicVFE_New', 'UpdateEpochHook',
+    'MAEConvNeXtEncoder', 'MAEConvNeXtDecoder'
 ]

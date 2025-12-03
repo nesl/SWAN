@@ -848,6 +848,7 @@ class MAESwinEncoder(nn.Module):
 
         # generate the binary mask: 0 is keep, 1 is remove
         mask = torch.ones([N, L], device=x.device)
+        # Should be equivalent to mask.scatter_(1, ids_keep, 0)
         mask.scatter_add_(1, ids_keep, torch.full([N, len_keep], fill_value=-1, dtype=mask.dtype, device=x.device))
         assert (mask.gather(1, ids_shuffle).gather(1, ids_restore) == mask).all()
 

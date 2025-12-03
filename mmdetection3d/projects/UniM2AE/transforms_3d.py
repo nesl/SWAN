@@ -120,7 +120,8 @@ class ImageAug3D_UniM2AE:
                 flip=flip,
                 rotate=0
             )
-            
+            # changed so that it can append
+            new_img = np.array(new_img)
             transform = torch.eye(4)
             transform[:2, :2] = rotation
             transform[:2, 3] = translation
@@ -133,7 +134,9 @@ class ImageAug3D_UniM2AE:
             transforms.append(transform.numpy())
 
         data["img"] = new_imgs
-        data["img_shape"] = new_imgs[0].size
+        #print("After ImageAug3D_UniM2AE, image shape:", new_imgs[0].shape)
+        H, W = new_imgs[0].shape[:2]
+        data["img_shape"] = (W, H)
         if "depth_maps" in data:
             data["depth_maps"] = depth_maps
         if "depths" in data:
