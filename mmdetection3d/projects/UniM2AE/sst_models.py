@@ -108,8 +108,8 @@ class SSTv2(nn.Module):
                 conv_list.append(convnormrelu)
             
             self.conv_layer = nn.ModuleList(conv_list)
-
-    def forward(self, voxel_info):
+    # keep layer mask is [0, 1, 0, ...] of length num_layers where 1 is run and 0 is skip
+    def forward(self, voxel_info, keep_layer_mask=None):
         '''
         '''
         num_shifts = 2 
@@ -126,6 +126,8 @@ class SSTv2(nn.Module):
         if hasattr(self, 'linear0'):
             output = self.linear0(output)
         for i, block in enumerate(self.block_list):
+            if keep_layer_mask and not keep_layer_mask[i]: # Do not run block if we keep_layer_mask[i] == 0
+                continue
             output = block(output, pos_embed_list, ind_dict_list, 
                 padding_mask_list, using_checkpoint = i in self.checkpoint_blocks)
 
