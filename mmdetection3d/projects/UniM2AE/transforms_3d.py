@@ -97,6 +97,7 @@ class ImageAug3D_UniM2AE:
         rotation = A.matmul(rotation)
         translation = A.matmul(translation) + b
 
+        # check size
         return img, rotation, translation
 
     def __call__(self, data: Dict[str, Any]) -> Dict[str, Any]:

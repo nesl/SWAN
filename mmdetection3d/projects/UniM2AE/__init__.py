@@ -2,17 +2,17 @@ from .deform_fusion_module import MSDeformAttnPixelDecoder3D, MultiScaleDeformab
 from .multimodal_interaction_module import MMIM
 from .reconstruction_head import ReconstructionHead
 from .swin import SwinTransformer
-from .unim2ae import UniM2AE
+from .unim2ae import UniM2AE, UniM2AE_modular
 from .volume_transform import VolumeTransform
 from .transforms_3d import ImageAug3D_UniM2AE, RandomFlip3Dv2, ImageNormalize
 from .positional_encoding import SinePositionalEncoding3D
 from .sst_models import SSTv2, SSTInputLayerV2Masked, SSTInputLayerV2, SSTv2Decoder, DynamicVFE_New
 from .utils import UpdateEpochHook
-from .convnext import MAEConvNeXtEncoder, MAEConvNeXtDecoder
+from .convnext import MAEConvNeXtEncoder, MAEConvNeXtDecoder, ConvNextInputLayerMasked, SparseConvNeXt
 
 __all__ = [
     'MSDeformAttnPixelDecoder3D', 'MultiScaleDeformableAttention3D', 'MMIM', 'ReconstructionHead', 'SwinTransformer',
     'UniM2AE', 'VolumeTransform', 'SinePositionalEncoding3D', 'ImageAug3D_UniM2AE', 'RandomFlip3Dv2', 'ImageNormalize',
     'SSTv2', 'SSTInputLayerV2' 'SSTInputLayerV2Masked', 'SSTv2Decoder', 'DynamicVFE_New', 'UpdateEpochHook',
-    'MAEConvNeXtEncoder', 'MAEConvNeXtDecoder'
+    'MAEConvNeXtEncoder', 'MAEConvNeXtDecoder', 'SparseConvNeXt','UniM2AE_modular'
 ]

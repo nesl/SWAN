@@ -14,8 +14,8 @@ from mmengine.model import BaseModule, ModuleList, Sequential
 from mmcv.cnn.bricks import DropPath
 from mmdet3d.registry import MODELS
 from mmcv.cnn.bricks.transformer import build_transformer_layer_sequence
-from .norm import GRN, LayerNorm2d, build_norm_layer
 
+# Attempt to import spconv
 try:
     import spconv.pytorch as spconv
     from spconv.pytorch import SparseConvTensor
@@ -23,18 +23,158 @@ except ImportError:
     spconv = None
     SparseConvTensor = None
 
-# Sparse helpers
+
+# ============================================================================
+#  Provided Modules (GRN, LayerNorm2d, build_norm_layer)
+# ============================================================================
+
+@MODELS.register_module()
+class GRN(nn.Module):
+    """Global Response Normalization Module.
+
+    Come from `ConvNeXt V2: Co-designing and Scaling ConvNets with Masked
+    Autoencoders <http://arxiv.org/abs/2301.00808>`_
+
+    Args:
+        in_channels (int): The number of channels of the input tensor.
+        eps (float): a value added to the denominator for numerical stability.
+            Defaults to 1e-6.
+    """
+
+    def __init__(self, in_channels, eps=1e-6):
+        super().__init__()
+        self.in_channels = in_channels
+        self.gamma = nn.Parameter(torch.zeros(in_channels))
+        self.beta = nn.Parameter(torch.zeros(in_channels))
+        self.eps = eps
+
+    def forward(self, x: torch.Tensor, data_format='channel_first'):
+        """Forward method.
+
+        Args:
+            x (torch.Tensor): The input tensor.
+            data_format (str): The format of the input tensor. If
+                ``"channel_first"``, the shape of the input tensor should be
+                (B, C, H, W). If ``"channel_last"``, the shape of the input
+                tensor should be (B, H, W, C). Defaults to "channel_first".
+        """
+        if data_format == 'channel_last':
+            gx = torch.norm(x, p=2, dim=(1, 2), keepdim=True)
+            nx = gx / (gx.mean(dim=-1, keepdim=True) + self.eps)
+            x = self.gamma * (x * nx) + self.beta + x
+        elif data_format == 'channel_first':
+            gx = torch.norm(x, p=2, dim=(2, 3), keepdim=True)
+            nx = gx / (gx.mean(dim=1, keepdim=True) + self.eps)
+            x = self.gamma.view(1, -1, 1, 1) * (x * nx) + self.beta.view(
+                1, -1, 1, 1) + x
+        return x
+
+
+@MODELS.register_module('LN2d')
+class LayerNorm2d(nn.LayerNorm):
+    """LayerNorm on channels for 2d images.
+
+    Args:
+        num_channels (int): The number of channels of the input tensor.
+        eps (float): a value added to the denominator for numerical stability.
+            Defaults to 1e-5.
+        elementwise_affine (bool): a boolean value that when set to ``True``,
+            this module has learnable per-element affine parameters initialized
+            to ones (for weights) and zeros (for biases). Defaults to True.
+    """
+
+    def __init__(self, num_channels: int, **kwargs) -> None:
+        super().__init__(num_channels, **kwargs)
+        self.num_channels = self.normalized_shape[0]
+
+    def forward(self, x, data_format='channel_first'):
+        """Forward method.
+
+        Args:
+            x (torch.Tensor): The input tensor.
+            data_format (str): The format of the input tensor. If
+                ``"channel_first"``, the shape of the input tensor should be
+                (B, C, H, W). If ``"channel_last"``, the shape of the input
+                tensor should be (B, H, W, C). Defaults to "channel_first".
+        """
+        assert x.dim() == 4, 'LayerNorm2d only supports inputs with shape ' \
+            f'(N, C, H, W), but got tensor with shape {x.shape}'
+        if data_format == 'channel_last':
+            x = F.layer_norm(x, self.normalized_shape, self.weight, self.bias,
+                             self.eps)
+        elif data_format == 'channel_first':
+            x = x.permute(0, 2, 3, 1)
+            x = F.layer_norm(x, self.normalized_shape, self.weight, self.bias,
+                             self.eps)
+            # If the output is discontiguous, it may cause some unexpected
+            # problem in the downstream tasks
+            x = x.permute(0, 3, 1, 2).contiguous()
+        return x
+
+
+def build_norm_layer(cfg: dict, num_features: int) -> nn.Module:
+    """Build normalization layer.
+
+    Args:
+        cfg (dict): The norm layer config, which should contain:
+
+            - type (str): Layer type.
+            - layer args: Args needed to instantiate a norm layer.
+
+        num_features (int): Number of input channels.
+
+    Returns:
+        nn.Module: The created norm layer.
+    """
+    if not isinstance(cfg, dict):
+        raise TypeError('cfg must be a dict')
+    if 'type' not in cfg:
+        raise KeyError('the cfg dict must contain the key "type"')
+    cfg_ = cfg.copy()
+
+    layer_type = cfg_.pop('type')
+    norm_layer = MODELS.get(layer_type)
+    if norm_layer is None:
+        raise KeyError(f'Cannot find {layer_type} in registry under scope '
+                       f'name {MODELS.scope}')
+
+    requires_grad = cfg_.pop('requires_grad', True)
+    cfg_.setdefault('eps', 1e-5)
+
+    if layer_type != 'GN':
+        layer = norm_layer(num_features, **cfg_)
+    else:
+        layer = norm_layer(num_channels=num_features, **cfg_)
+
+    if layer_type == 'SyncBN' and hasattr(layer, '_specify_ddp_gpu_num'):
+        layer._specify_ddp_gpu_num(1)
+
+    for param in layer.parameters():
+        param.requires_grad = requires_grad
+
+    return layer
+
+
+# ============================================================================
+#  Sparse Helper Modules
+# ============================================================================
+
 class SparseLayerNorm(nn.Module):
-    """ LayerNorm with sparse """
+    """LayerNorm that operates on spconv.SparseConvTensor.features."""
     def __init__(self, normalized_shape, eps=1e-6, elementwise_affine=True):
         super().__init__()
         self.ln = nn.LayerNorm(normalized_shape, eps=eps, elementwise_affine=elementwise_affine)
+
     def forward(self, x):
+        # x: SparseConvTensor
+        # Apply LayerNorm to the feature dimension (N_active, C)
         x = x.replace_feature(self.ln(x.features))
         return x
-    
+
 class SparseGRN(nn.Module):
-    """ Global Response Normalization for SparseConvTensor (Robust) """
+    """Global Response Normalization for SparseConvTensor.
+    Replicates the logic of GRN for 'channel_first' but handling sparse features.
+    """
     def __init__(self, in_channels, eps=1e-6):
         super().__init__()
         self.in_channels = in_channels
@@ -43,47 +183,49 @@ class SparseGRN(nn.Module):
         self.eps = eps
 
     def forward(self, x):
-        # x.features: (N_points, C)
-        # x.indices: (N_points, 4) -> [batch_idx, z, y, x] (3D) or [batch_idx, y, x] (2D)
+        # x: SparseConvTensor
+        # features: (N_points, C)
+        # indices: (N_points, 4) -> [batch_idx, z, y, x] (3d) or [batch_idx, y, x] (2d)
         
-        # 1. Get Batch Indices (Ensure contiguous LongTensor)
-        batch_idx = x.indices[:, 0].long().contiguous()
+        batch_idx = x.indices[:, 0]
         batch_size = x.batch_size
         
-        # Safety fallback: if indices exceed batch_size, expand batch_size
-        if batch_idx.numel() > 0:
-            max_idx = batch_idx.max().item()
-            if max_idx >= batch_size:
-                batch_size = max_idx + 1
-
-        # 2. Compute Squares (Use Float32 for stability and index_add_ support)
-        dtype_orig = x.features.dtype
-        features_f32 = x.features.float()
-        sq_feat = features_f32.pow(2)
+        # 1. Compute L2 norm across spatial dimensions for each channel, per batch sample.
+        #    gx_i = ||X_i||_2
+        #    We need to aggregate (x.features^2) by batch_idx.
         
-        # 3. Accumulate Squares per Batch
+        sq_feat = x.features.pow(2) # (N_points, C)
+        
+        # Prepare container for summed squares: (Batch_Size, C)
         gx_sq = torch.zeros((batch_size, x.features.shape[1]), 
-                            device=x.features.device, dtype=torch.float32)
+                            device=x.features.device, dtype=x.features.dtype)
         
-        # index_add_(dim, index, source)
-        gx_sq.index_add_(0, batch_idx, sq_feat)
+        # Sum squares based on batch index
+        # indices are int32, need long for indexing
+        gx_sq.index_add_(0, batch_idx.long(), sq_feat)
         
-        # 4. Global Stats
-        gx = torch.sqrt(gx_sq) # (B, C)
+        gx = torch.sqrt(gx_sq) # (B, C) represent global spatial norm per channel
+        
+        # 2. Normalize gx
+        #    nx = gx / (mean(gx) + eps)
+        #    mean taken over channels (dim=1)
         mx = gx.mean(dim=1, keepdim=True) # (B, 1)
         nx = gx / (mx + self.eps) # (B, C)
         
-        # 5. Broadcast back to points
-        # nx[batch_idx] is (N, C)
-        nx_expanded = nx.index_select(0, batch_idx)
+        # 3. Broadcast nx back to each point based on batch_idx
+        nx_expanded = nx[batch_idx.long()] # (N_points, C)
         
-        # 6. Apply Affine (Cast back to original dtype)
-        nx_expanded = nx_expanded.to(dtype_orig)
+        # 4. Apply affine transformation
+        #    result = gamma * (x * nx) + beta + x
         out_features = self.gamma * (x.features * nx_expanded) + self.beta + x.features
         
         x = x.replace_feature(out_features)
         return x
 
+
+# ============================================================================
+#  Modified ConvNeXt Classes with Sparse Support
+# ============================================================================
 
 class ConvNeXtBlock(BaseModule):
     """ConvNeXt Block.
@@ -91,21 +233,15 @@ class ConvNeXtBlock(BaseModule):
     Args:
         in_channels (int): The number of input channels.
         dw_conv_cfg (dict): Config of depthwise convolution.
-            Defaults to ``dict(kernel_size=7, padding=3)``.
         norm_cfg (dict): The config dict for norm layers.
-            Defaults to ``dict(type='LN2d', eps=1e-6)``.
-        act_cfg (dict): The config dict for activation between pointwise
-            convolution. Defaults to ``dict(type='GELU')``.
-        mlp_ratio (float): The expansion ratio in both pointwise convolution.
-            Defaults to 4.
-        linear_pw_conv (bool): Whether to use linear layer to do pointwise
-            convolution. More details can be found in the note.
-            Defaults to True.
-        drop_path_rate (float): Stochastic depth rate. Defaults to 0.
+        act_cfg (dict): The config dict for activation.
+        mlp_ratio (float): The expansion ratio.
+        linear_pw_conv (bool): Whether to use linear layer for pointwise conv.
+        drop_path_rate (float): Stochastic depth rate.
         layer_scale_init_value (float): Init value for Layer Scale.
-            Defaults to 1e-6.
-        use_grn (bool): Whether to use Global Response Normalization (V2 config).
-        with_cp (bool): Whether to use checkpointing to save memory.
+        use_grn (bool): Whether to use Global Response Normalization.
+        with_cp (bool): Whether to use checkpointing.
+        sparse (bool): Whether to use sparse convolutions.
     """
 
     def __init__(self,
@@ -117,26 +253,28 @@ class ConvNeXtBlock(BaseModule):
                  linear_pw_conv=True,
                  drop_path_rate=0.,
                  layer_scale_init_value=0,
-                 use_grn=True, # V2 Flag
+                 use_grn=True, 
                  with_cp=False,
-                 sparse=False
-                 ):
+                 sparse=False):
         super().__init__()
         self.with_cp = with_cp
         self.sparse = sparse
 
         if self.sparse:
-            assert spconv is not None, "spconv is not installed."
-            # Depthwise: Submanifold Conv to keep indices
+            assert spconv is not None, "spconv is not installed"
+            # Depthwise convolution in Sparse: SubMConv2d with groups=in_channels
+            # Submanifold conv keeps sparsity pattern same as input
             self.depthwise_conv = spconv.SubMConv2d(
-                in_channels, in_channels, 
+                in_channels, 
+                in_channels, 
                 kernel_size=dw_conv_cfg['kernel_size'], 
                 padding=dw_conv_cfg['padding'],
-                groups=1, 
-                bias=True, # ConvNeXt usually has bias in DW
-                indice_key=f'stage_dw_{in_channels}' # simple key sharing
+                groups=in_channels,
+                bias=True, # ConvNeXt V2 typically uses bias
+                indice_key=f'dw_{in_channels}' # Optional: share indices if helpful, usually unique per stage/block preferred?
             )
-            self.norm = SparseLayerNorm(in_channels, eps=1e-6)
+            # Sparse LayerNorm
+            self.norm = SparseLayerNorm(in_channels, eps=norm_cfg.get('eps', 1e-6))
         else:
             self.depthwise_conv = nn.Conv2d(
                 in_channels, in_channels, groups=in_channels, **dw_conv_cfg)
@@ -159,7 +297,6 @@ class ConvNeXtBlock(BaseModule):
 
         self.act = MODELS.build(act_cfg)
 
-
         if use_grn:
             if self.sparse:
                 self.grn = SparseGRN(mid_channels)
@@ -177,64 +314,54 @@ class ConvNeXtBlock(BaseModule):
 
     def forward(self, x, mask=None):
         """
-        mask: (b, 1, 1, 1)wether to mask, if True return the input
-        * This is temp implementation of the drop behavior
+        mask: (b, 1, 1, 1) whether to mask, if True return the input
         """
-
-
         
+        # --- Sparse Path ---
         if self.sparse:
-
-            if mask is not None and float(mask.max()) == 0.:
-                return x
             def _inner_forward_sparse(x):
                 identity = x
-                
-                # Convolution / Norm / Act
+                # 1. Depthwise (SubM)
                 x = self.depthwise_conv(x)
+                
+                # 2. Norm
                 x = self.norm(x)
+                
+                # 3. PW Conv 1
                 x = self.pointwise_conv1(x)
+                
+                # 4. Act (Apply to features)
                 x = x.replace_feature(self.act(x.features))
                 
+                # 5. GRN
                 if self.grn is not None:
                     x = self.grn(x)
                 
+                # 6. PW Conv 2
                 x = self.pointwise_conv2(x)
                 
+                # 7. Gamma / Scale
                 if self.gamma is not None:
                     x = x.replace_feature(x.features.mul(self.gamma))
                 
-                # Stochastic Depth (DropPath)
-                if not isinstance(self.drop_path, nn.Identity):
+                # 8. Drop Path & Residual
+                # We add features. indices are guaranteed same for SubMConv.
+                if self.drop_path.drop_prob > 0.:
                     x = x.replace_feature(self.drop_path(x.features))
                 
-                # --- Layer Drop (Block Masking) ---
-                if mask is not None:
-                    # mask is (B, 1, 1, 1) or (B, 1)
-                    # x.indices is (N, 3) -> [batch_idx, y, x]
-                    batch_ids = x.indices[:, 0].long()
-                    
-                    # Flatten mask to (B,)
-                    mask_flat = mask.view(-1)
-                    
-                    # Gather mask values for each point: (N,)
-                    point_mask = mask_flat[batch_ids].unsqueeze(-1) # (N, 1)
-                    
-                    # Apply mask to features
-                    x = x.replace_feature(x.features * point_mask)
-
-                # Residual Connection
                 out = x.replace_feature(identity.features + x.features)
                 return out
-             
+
             if self.with_cp and x.requires_grad:
                 x = cp.checkpoint(_inner_forward_sparse, x)
             else:
                 x = _inner_forward_sparse(x)
             return x
-        
+
+        # --- Dense Path ---
         if mask is not None and float(mask.max()) == 0.:
-                return x
+            return x
+        
         def _inner_forward(x):
             shortcut = x
             x = self.depthwise_conv(x)
@@ -273,98 +400,25 @@ class ConvNeXtBlock(BaseModule):
         return x
 
 
-
 @MODELS.register_module()
 class ConvNeXt(BaseModule):
     """ConvNeXt v1&v2 backbone.
-
-    A PyTorch implementation of `A ConvNet for the 2020s
-    <https://arxiv.org/abs/2201.03545>`_ and
-    `ConvNeXt V2: Co-designing and Scaling ConvNets with Masked Autoencoders
-    <http://arxiv.org/abs/2301.00808>`_
-
-    Modified from the `official repo
-    <https://github.com/facebookresearch/ConvNeXt/blob/main/models/convnext.py>`_
-    and `timm
-    <https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/convnext.py>`_.
-
-    To use ConvNeXt v2, please set ``use_grn=True`` and ``layer_scale_init_value=0.``.
-
+    ...
     Args:
-        arch (str | dict): The model's architecture. If string, it should be
-            one of architecture in ``ConvNeXt.arch_settings``. And if dict, it
-            should include the following two keys:
-
-            - depths (list[int]): Number of blocks at each stage.
-            - channels (list[int]): The number of channels at each stage.
-
-            Defaults to 'tiny'.
-        in_channels (int): Number of input image channels. Defaults to 3.
-        stem_patch_size (int): The size of one patch in the stem layer.
-            Defaults to 4.
-        norm_cfg (dict): The config dict for norm layers.
-            Defaults to ``dict(type='LN2d', eps=1e-6)``.
-        act_cfg (dict): The config dict for activation between pointwise
-            convolution. Defaults to ``dict(type='GELU')``.
-        linear_pw_conv (bool): Whether to use linear layer to do pointwise
-            convolution. Defaults to True.
-        use_grn (bool): Whether to add Global Response Normalization in the
-            blocks. Defaults to False.
-        drop_path_rate (float): Stochastic depth rate. Defaults to 0.
-        layer_scale_init_value (float): Init value for Layer Scale.
-            Defaults to 1e-6.
-        out_indices (Sequence | int): Output from which stages.
-            Defaults to -1, means the last stage.
-        frozen_stages (int): Stages to be frozen (all param fixed).
-            Defaults to 0, which means not freezing any parameters.
-        gap_before_final_norm (bool): Whether to globally average the feature
-            map before the final norm layer. In the official repo, it's only
-            used in classification task. Defaults to True.
-        with_cp (bool): Use checkpoint or not. Using checkpoint will save some
-            memory while slowing down the training speed. Defaults to False.
-        init_cfg (dict, optional): Initialization config dict
-    """  # noqa: E501
+        ...
+        sparse (bool): Whether to use sparse convolutions. Defaults to False.
+    """  
     arch_settings = {
-        'atto': {
-            'depths': [2, 2, 6, 2],
-            'channels': [40, 80, 160, 320]
-        },
-        'femto': {
-            'depths': [2, 2, 6, 2],
-            'channels': [48, 96, 192, 384]
-        },
-        'pico': {
-            'depths': [2, 2, 6, 2],
-            'channels': [64, 128, 256, 512]
-        },
-        'nano': {
-            'depths': [2, 2, 8, 2],
-            'channels': [80, 160, 320, 640]
-        },
-        'tiny': {
-            'depths': [3, 3, 9, 3],
-            'channels': [96, 192, 384, 768]
-        },
-        'small': {
-            'depths': [3, 3, 27, 3],
-            'channels': [96, 192, 384, 768]
-        },
-        'base': {
-            'depths': [3, 3, 27, 3],
-            'channels': [128, 256, 512, 1024]
-        },
-        'large': {
-            'depths': [3, 3, 27, 3],
-            'channels': [192, 384, 768, 1536]
-        },
-        'xlarge': {
-            'depths': [3, 3, 27, 3],
-            'channels': [256, 512, 1024, 2048]
-        },
-        'huge': {
-            'depths': [3, 3, 27, 3],
-            'channels': [352, 704, 1408, 2816]
-        }
+        'atto': {'depths': [2, 2, 6, 2], 'channels': [40, 80, 160, 320]},
+        'femto': {'depths': [2, 2, 6, 2], 'channels': [48, 96, 192, 384]},
+        'pico': {'depths': [2, 2, 6, 2], 'channels': [64, 128, 256, 512]},
+        'nano': {'depths': [2, 2, 8, 2], 'channels': [80, 160, 320, 640]},
+        'tiny': {'depths': [3, 3, 9, 3], 'channels': [96, 192, 384, 768]},
+        'small': {'depths': [3, 3, 27, 3], 'channels': [96, 192, 384, 768]},
+        'base': {'depths': [3, 3, 27, 3], 'channels': [128, 256, 512, 1024]},
+        'large': {'depths': [3, 3, 27, 3], 'channels': [192, 384, 768, 1536]},
+        'xlarge': {'depths': [3, 3, 27, 3], 'channels': [256, 512, 1024, 2048]},
+        'huge': {'depths': [3, 3, 27, 3], 'channels': [352, 704, 1408, 2816]}
     }
     def __init__(self,
                  arch='tiny',
@@ -373,7 +427,7 @@ class ConvNeXt(BaseModule):
                  norm_cfg=dict(type='LN2d', eps=1e-6),
                  act_cfg=dict(type='GELU'),
                  linear_pw_conv=True,
-                 use_grn=True, # [v2]
+                 use_grn=True,
                  drop_path_rate=0.,
                  layer_scale_init_value=0.,
                  out_indices=-1,
@@ -382,14 +436,8 @@ class ConvNeXt(BaseModule):
                  with_cp=False,
                  sparse=False,
                  init_cfg=[
-                     dict(
-                         type='TruncNormal',
-                         layer=['Conv2d', 'Linear'],
-                         std=.02,
-                         bias=0.),
-                     dict(
-                         type='Constant', layer=['LayerNorm'], val=1.,
-                         bias=0.),
+                     dict(type='TruncNormal', layer=['Conv2d', 'Linear'], std=.02, bias=0.),
+                     dict(type='Constant', layer=['LayerNorm'], val=1., bias=0.),
                  ]):
         super().__init__(init_cfg=init_cfg)
         self.sparse = sparse
@@ -415,9 +463,8 @@ class ConvNeXt(BaseModule):
             f'The "depths" ({self.depths}) and "channels" ({self.channels}) ' \
             'should be both sequence with the same length.'
 
-        
         self.num_stages = len(self.depths)
-        self.total_blocks = sum(self.depths) # This is for future dropping behavior to keep track of total blocks
+        self.total_blocks = sum(self.depths)
 
         if isinstance(out_indices, int):
             out_indices = [out_indices]
@@ -433,18 +480,15 @@ class ConvNeXt(BaseModule):
         self.frozen_stages = frozen_stages
         self.gap_before_final_norm = gap_before_final_norm
 
-        # stochastic depth decay rule
         dpr = [
             x.item()
             for x in torch.linspace(0, drop_path_rate, sum(self.depths))
         ]
         block_idx = 0
 
-        # 4 downsample layers between stages, including the stem layer.
         self.downsample_layers = ModuleList()
-
-
-       # Stem Layer
+        
+        # Stem Layer
         if self.sparse:
             # Sparse Stem
             stem = nn.Sequential(
@@ -469,9 +513,6 @@ class ConvNeXt(BaseModule):
             )
         self.downsample_layers.append(stem)
 
-
-        # 4 feature resolution stages, each consisting of multiple residual
-        # blocks
         self.stages = ModuleList()
 
         for i in range(self.num_stages):
@@ -541,41 +582,42 @@ class ConvNeXt(BaseModule):
         self._freeze_stages()
 
     def get_total_blocks(self):
-        # Return the total number of blocks across all stages"
         return self.total_blocks
 
     def forward(self, x, block_mask=None):
-        """
-        use get_total_blocks to check how many blocks we have 
-        Added 'block_mask' for dropping.
-        block_mask (Tensor, optional): (Batch, Total_Blocks) of 0s and 1s.
-        """
         outs = []
-        global_block_idx = 0 # [ADDED] To track position in flattened mask
+        global_block_idx = 0 
 
         for i, stage_blocks in enumerate(self.stages):
             x = self.downsample_layers[i](x)
             
-            # Iterate through blocks and apply specific mask bit
             for block in stage_blocks:
                 current_mask = None
-                if block_mask is not None:
-                    # Extract (B, 1) -> Broadcast to (B, 1, 1, 1)
+                if block_mask is not None and not self.sparse:
+                    # In dense mode, we use the mask to zero out blocks
                     current_mask = block_mask[:, global_block_idx].view(-1, 1, 1, 1)
                 
+                # In sparse mode, block_mask is less standard to apply per block unless
+                # we explicitly drop indices. Usually kept implicit.
                 x = block(x, mask=current_mask)
                 global_block_idx += 1
-            # 3. Output features
+
             if i in self.out_indices:
                 norm_layer = getattr(self, f'norm{i}')
-                if self.gap_before_final_norm:
-                    gap = x.mean([-2, -1], keepdim=True)
-                    outs.append(norm_layer(gap).flatten(1))
+                if self.sparse:
+                    # x is SparseConvTensor
+                    # If global average pool is needed for classification, we would need to 
+                    # aggregate. However, typical usage in detectors is returning features.
+                    # We return the sparse tensor (or its features) here.
+                    outs.append(norm_layer(x)) 
                 else:
-                    outs.append(norm_layer(x))
+                    if self.gap_before_final_norm:
+                        gap = x.mean([-2, -1], keepdim=True)
+                        outs.append(norm_layer(gap).flatten(1))
+                    else:
+                        outs.append(norm_layer(x))
 
         return tuple(outs)
-
 
 
 def get_2d_sincos_pos_embed(embed_dim, grid_size, cls_token=False):
@@ -610,14 +652,14 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
     return np.concatenate([emb_sin, emb_cos], axis=1)
 
 
-
 @MODELS.register_module()
 class MAEConvNeXtEncoder(BaseModule):
     """
-    ConvNeXt V2 Encoder Wrapper
+    ConvNeXt V2 Encoder Wrapper with Sparse Support.
     """
     def __init__(self, img_size=224, in_chans=3, arch='tiny', 
-                 mask_ratio=0.75, use_grn=True, drop_path_rate=0.2, sparse=False,
+                 mask_ratio=0.75, use_grn=True, drop_path_rate=0.2, 
+                 sparse=False,
                  init_cfg=None, **kwargs):
         super().__init__(init_cfg=init_cfg)
         self.mask_ratio = mask_ratio
@@ -634,13 +676,12 @@ class MAEConvNeXtEncoder(BaseModule):
                           self.img_size[1] // self.output_stride)
         self.num_patches = self.grid_size[0] * self.grid_size[1]
 
-        # Backbone
         self.encoder = ConvNeXt(
             arch=arch,
             in_channels=in_chans,
             use_grn=use_grn,
             drop_path_rate=drop_path_rate,
-            out_indices=[-1], # FCMAE uses the final feature map
+            out_indices=[-1], 
             gap_before_final_norm=False, 
             sparse=self.sparse,
             **kwargs
@@ -651,7 +692,6 @@ class MAEConvNeXtEncoder(BaseModule):
         else:
             self.embed_dim = arch['channels'][-1]
         
-        # Initialize weights if no config provided
         if init_cfg is None:
             self.init_weights()
 
@@ -662,7 +702,6 @@ class MAEConvNeXtEncoder(BaseModule):
     def random_masking(self, x, mask_ratio):
         """
         Perform per-sample random masking by per-sample shuffling.
-        Per-sample shuffling is done by argsort random noise.
         """
         N, L = x.shape[0], self.num_patches 
         len_keep = int(L * (1 - mask_ratio))
@@ -681,6 +720,7 @@ class MAEConvNeXtEncoder(BaseModule):
         mask.scatter_add_(1, ids_keep, torch.full([N, len_keep], fill_value=-1, dtype=mask.dtype, device=x.device))
         
         return mask, ids_restore, ids_shuffle
+
     def dense_to_sparse(self, x, mask):
         """
         Convert (B, C, H, W) image and (B, L) mask into a SparseConvTensor containing only kept pixels.
@@ -738,7 +778,7 @@ class MAEConvNeXtEncoder(BaseModule):
     def forward(self, x, camera_only=False, block_mask=None):
         B, C, H, W = x.shape
         
-        #  Generate Mask
+        # 1. Generate Mask
         mask, ids_restore, ids_shuffle = self.random_masking(x, self.mask_ratio)
         
         # --- Sparse Logic ---
@@ -807,6 +847,7 @@ class MAEConvNeXtEncoder(BaseModule):
 class MAEConvNeXtDecoder(BaseModule):
     """
     ConvNeXt V2 Decoder wrapper. 
+    (Standard Dense Decoder, as reconstruction usually happens in dense space)
     """
     def __init__(self, num_patches, patch_size=32, in_chans=3,
                  embed_dim=768, decoder_embed_dim=512, decoder_depth=1, 
@@ -821,25 +862,24 @@ class MAEConvNeXtDecoder(BaseModule):
         self.decoder_embed = nn.Linear(embed_dim, decoder_embed_dim) if embed_dim != decoder_embed_dim else nn.Identity()
         self.mask_token = nn.Parameter(torch.zeros(1, 1, decoder_embed_dim))
         
-        # Fixed Sin-Cos Pos Embed
         self.decoder_pos_embed = nn.Parameter(
             torch.zeros(1, num_patches[0] * num_patches[1], decoder_embed_dim), requires_grad=False
         )
 
+        # Decoder uses dense ConvNeXtBlocks always
         self.decoder_blocks = nn.ModuleList([
             ConvNeXtBlock(
                 in_channels=decoder_embed_dim, 
                 dw_conv_cfg=dict(kernel_size=7, padding=3), 
                 use_grn=use_grn,
                 with_cp=False,
-                sparse=False
+                sparse=False # Decoder is dense
             ) for _ in range(decoder_depth)
         ])
         
         self.decoder_norm = nn.LayerNorm(decoder_embed_dim)
         self.decoder_pred = nn.Linear(decoder_embed_dim, (patch_size**2) * in_chans)
 
-        # Cross Modality Module (Transformer-based)
         self.cross_modality_module = None 
         if decoder is not None:
             self.cross_modality_module = build_transformer_layer_sequence(decoder)
@@ -851,24 +891,16 @@ class MAEConvNeXtDecoder(BaseModule):
 
         self.norm_pix_loss = norm_pix_loss
         
-        # Manually trigger init if no init_cfg provided
         if init_cfg is None:
             self.init_weights()
 
     def init_weights(self):
-        """Initialize weights for decoder."""
-        # Initialize Positional Embeddings
         if self.cross_modality_module is None:
             pos_embed = get_2d_sincos_pos_embed(self.decoder_pos_embed.shape[-1], self.num_patches, cls_token=False)
             self.decoder_pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
         
-        # Mask Token
         torch.nn.init.normal_(self.mask_token, std=.02)
-
-        # Apply standard init
         self.apply(self._init_weights_impl)
-        
-        # Parent init (handles init_cfg)
         super().init_weights()
 
     def _init_weights_impl(self, m):
@@ -881,9 +913,6 @@ class MAEConvNeXtDecoder(BaseModule):
             nn.init.constant_(m.weight, 1.0)
 
     def patchify(self, imgs):
-        """
-        imgs: (N, 3, H, W) -> x: (N, L, patch_size**2 * 3)
-        """
         p = self.patch_size
         assert imgs.shape[2] % p == 0 and imgs.shape[3] % p == 0
 
@@ -895,9 +924,6 @@ class MAEConvNeXtDecoder(BaseModule):
         return x
 
     def unpatchify(self, x):
-        """
-        x: (N, L, patch_size**2 * 3) -> imgs: (N, 3, H, W)
-        """
         p = self.patch_size
         h = self.grid_size[0]
         w = self.grid_size[1]
@@ -956,377 +982,3 @@ class MAEConvNeXtDecoder(BaseModule):
         loss = loss.mean(dim=-1)
         loss = (loss * mask).sum() / mask.sum()
         return loss
-    
-
-
-
-
-class SparseConvNeXtBlock(spconv.SparseModule):
-    def __init__(self, in_channels, dim, kernel_size=7):
-        super().__init__()
-        self.dim = dim
-        padding = kernel_size // 2
-        
-        # 1. Depthwise Convolution (7x7x7)
-        # groups=dim makes it depthwise
-        self.dwconv = spconv.SubMConv3d(
-            dim, dim, kernel_size=kernel_size, padding=padding, bias=True, groups=dim, indice_key="res"
-        )
-        
-        # 2. LayerNorm (Applied to the feature channel dimension)
-        self.norm = nn.LayerNorm(dim, eps=1e-6)
-        
-        # 3. Pointwise Convolution (Linear) 1x1x1: dim -> 4*dim
-        self.pwconv1 = spconv.SubMConv3d(dim, 4 * dim, kernel_size=1, bias=True)
-        
-        # 4. Activation
-        self.act = nn.GELU()
-        
-        # 5. Pointwise Convolution (Linear) 1x1x1: 4*dim -> dim
-        self.pwconv2 = spconv.SubMConv3d(4 * dim, dim, kernel_size=1, bias=True)
-
-    def forward(self, x):
-        input = x
-        x = self.dwconv(x)
-        
-        # SparseTensor.features is [N, C], so LayerNorm works directly
-        x.features = self.norm(x.features)
-        
-        x = self.pwconv1(x)
-        x.features = self.act(x.features)
-        x = self.pwconv2(x)
-        
-        # Residual Connection
-        x.features = input.features + x.features
-        return x
-
-@MODELS.register_module()
-class SparseConvNeXt(nn.Module):
-    '''
-    Sparse ConvNeXt Backbone replacing SSTv2.
-    Uses spconv (Sparse Submanifold Convolutions) for efficiency and geometric inductive bias.
-    '''
-    def __init__(
-        self,
-        in_channels=128,
-        dim=128,
-        kernel_size=7,
-        num_blocks=6,
-        output_shape=None,  # [nx, ny, nz]
-        sparse_shape=None,  # [vx, vy, vz]
-        masked=False,
-        debug=True,
-        drop_path=0.0,
-        ):
-        super().__init__()
-        self.masked = masked
-        self.sparse_shape = sparse_shape # e.g. [400, 400, 1] or [128, 128, 8]
-        self.output_shape = output_shape
-        
-        # Input projection if needed (though typically VFE handles this)
-        self.input_proj = spconv.SubMConv3d(in_channels, dim, kernel_size=1, bias=False)
-
-        # Stacking Blocks
-        blocks = []
-        for i in range(num_blocks):
-            blocks.append(SparseConvNeXtBlock(dim, dim, kernel_size=kernel_size))
-        self.blocks = spconv.SparseSequential(*blocks)
-
-        self._reset_parameters()
-
-    def _reset_parameters(self):
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.trunc_normal_(m.weight, std=.02)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            elif isinstance(m, (nn.LayerNorm, nn.BatchNorm1d)):
-                nn.init.constant_(m.bias, 0)
-                nn.init.constant_(m.weight, 1.0)
-
-    def forward(self, voxel_info):
-        voxel_feats = voxel_info['voxel_feats']
-        voxel_coors = voxel_info['voxel_coors']
-        
-        batch_size = voxel_coors[:, 0].max().item() + 1
-        
-        # Create Sparse Tensor
-        # Note: voxel_coors is [b, z, y, x], spconv expects the same order for indices
-        input_sp = spconv.SparseConvTensor(
-            features=voxel_feats,
-            indices=voxel_coors.int(),
-            spatial_shape=self.sparse_shape[::-1], # spconv expects [z, y, x] often, check config.
-                                                   # Usually input is [X, Y, Z] size, output indices [b, z, y, x]
-            batch_size=int(batch_size)
-        )
-
-        # Forward Pass
-        x = self.input_proj(input_sp)
-        x = self.blocks(x)
-        
-        # Handle Output
-        if self.masked:
-            # For MAE Pre-training: We return the features of the unmasked voxels.
-            # The Decoder will handle the reconstruction using the indices stored in voxel_info.
-            voxel_info["output"] = x.features
-            return voxel_info
-        else:
-            # For Downstream Detection: Densify to 3D Volume or BEV
-            # output_shape is [nx, ny, nz]
-            # .dense() returns [B, C, D, H, W] -> [B, C, nz, ny, nx]
-            dense_volume = x.dense() 
-            
-            # Permute to [B, C, X, Y, Z] if expected, or reshape to BEV
-            # Assuming output_shape was [X, Y, Z], and dense gives [B, C, Z, Y, X]
-            # Let's align with the original recover_volume which returned [B, C, nx, ny, nz]
-            
-            # dense() -> [B, C, Z, Y, X]
-            dense_volume = dense_volume.permute(0, 1, 4, 3, 2).contiguous() # -> [B, C, X, Y, Z]
-            
-            voxel_info["output"] = dense_volume
-            return dense_volume
-
-@MODELS.register_module()
-class ConvNextInputLayerMasked(nn.Module):
-    """
-    Simplified Input Layer replacing SSTInputLayerV2Masked.
-    Removes all window partitioning/shifting logic.
-    Focuses solely on Masking (Dropping) voxels and generating Ground Truth.
-    """
-
-    def __init__(self,
-        sparse_shape,
-        voxel_size,
-        debug=True,
-        masking_ratio=0.7,
-        drop_points_th=100,
-        pred_dims=3,
-        fake_voxels_ratio=0.1,
-        use_chamfer=True,
-        use_num_points=True,
-        use_fake_voxels=True,
-        shuffle_voxels=True, # Kept for random drop consistency
-        ):
-        super().__init__()
-        self.sparse_shape = sparse_shape
-        self.voxel_size = voxel_size
-        self.debug = debug
-        self.masking_ratio = masking_ratio
-        self.drop_points_th = drop_points_th
-        self.pred_dims = pred_dims
-        self.fake_voxel_ratio = fake_voxels_ratio
-        self.use_chamfer = use_chamfer
-        self.use_num_points = use_num_points
-        self.use_fake_voxels = use_fake_voxels
-        self.shuffle_voxels = shuffle_voxels
-
-        assert use_chamfer or use_num_points or use_fake_voxels, \
-            "Need to use at least one of chamfer, num_points, and fake_voxels"
-
-    def forward(self, voxel_feats, voxel_coors, low_level_point_feature, point_coors, batch_size=None):
-        if batch_size is None:
-            batch_size = int(voxel_coors[:, 0].max().item()) + 1
-        device = voxel_feats.device
-
-        # 1. Generate Ground Truth (for the Decoder/Loss later)
-        gt_dict, fake_voxel_coors = self.get_ground_truth(
-            batch_size, device, low_level_point_feature, point_coors, voxel_coors, voxel_feats)
-
-        # 2. Mask Voxels (Drop 70%)
-        voxel_info_decoder, voxel_info_encoder = self.mask_voxels(device, voxel_coors, voxel_feats, fake_voxel_coors)
-
-        # 3. Pack info
-        voxel_info_decoder["gt_dict"] = gt_dict
-        voxel_info_encoder["voxel_info_decoder"] = voxel_info_decoder
-        
-        # Store original index for tracking
-        if "original_index" not in voxel_info_encoder:
-             voxel_info_encoder["original_index"] = torch.arange(len(voxel_feats), device=device)
-
-        return voxel_info_encoder
-
-    def mask_voxels(self, device, voxel_coors, voxel_feats, fake_voxel_coors):
-        # Masking voxels: True -> masked, False -> unmasked
-        mask = torch.rand(len(voxel_feats), device=device) < self.masking_ratio
-        
-        masked_idx = mask.nonzero().ravel()
-        unmasked_idx = (~mask).nonzero().ravel()
-        
-        n_masked_voxels = len(masked_idx)
-        n_unmasked_voxels = len(unmasked_idx)
-
-        # --- Handle Fake Voxels (Empty spots treated as tokens) ---
-        if self.use_fake_voxels and fake_voxel_coors is not None:
-            fake_voxel_idx = torch.arange(len(fake_voxel_coors), device=device) + len(voxel_coors)
-            
-            # Combine real and fake for the decoder
-            # Note: We do NOT pass fake voxels to encoder if they are masked, 
-            # but usually fake voxels are targets, so they are effectively "masked" input-wise.
-            
-            # However, for reconstruction consistency, we merge coords/feats
-            voxel_coors_all = torch.cat([voxel_coors, fake_voxel_coors], dim=0)
-            
-            fake_voxel_feats = torch.zeros(
-                (len(fake_voxel_coors), voxel_feats.shape[1]), device=device, dtype=voxel_feats.dtype)
-            voxel_feats_all = torch.cat([voxel_feats, fake_voxel_feats], dim=0)
-            
-            # Extend mask. Fake voxels are considered "masked" (we want to predict them)
-            # so we append True to the mask? 
-            # In original code: mask = cat([mask, zeros]) -> effectively unmasked? 
-            # Let's check original logic: 
-            # "mask = cat([mask, zeros])" implies fake voxels are initially marked False (unmasked)?
-            # But then "dec2fake_idx" suggests they are handled separately. 
-            # Usually, fake voxels are NOT passed to encoder, so they are effectively masked.
-            
-            # Original logic preserved:
-            mask_all = torch.cat([mask, torch.zeros(len(fake_voxel_coors), device=device, dtype=torch.bool)])
-            n_fake_voxels = len(fake_voxel_idx)
-        else:
-            voxel_coors_all = voxel_coors
-            voxel_feats_all = voxel_feats
-            mask_all = mask
-            n_fake_voxels = 0
-            fake_voxel_idx = None
-
-        # --- Prepare Decoder Info (Full Set) ---
-        voxel_info_decoder = {
-            "voxel_feats": voxel_feats_all,
-            "voxel_coors": voxel_coors_all,
-            "mask": mask_all,
-            "n_unmasked": n_unmasked_voxels,
-            "n_masked": n_masked_voxels,
-            "unmasked_idx": unmasked_idx,
-            "masked_idx": masked_idx,
-            "original_index": torch.arange(len(voxel_feats_all), device=device) # Simple index
-        }
-
-        if self.use_fake_voxels:
-            voxel_info_decoder["fake_voxel_idx"] = fake_voxel_idx
-            voxel_info_decoder["n_fake"] = n_fake_voxels
-
-        # --- Prepare Encoder Info (Subset) ---
-        # The encoder ONLY sees unmasked real voxels
-        encoder_feats = voxel_feats[unmasked_idx]
-        encoder_coors = voxel_coors[unmasked_idx]
-
-        voxel_info_encoder = {
-            "voxel_feats": encoder_feats,
-            "voxel_coors": encoder_coors,
-            "original_index": unmasked_idx # To map back later
-        }
-
-        # --- Index Mapping for Reconstruction ---
-        # Map decoder indices back to encoder/masked/fake
-        # Since we just used arange, the mapping is straightforward
-        
-        # dec2enc: Where in the decoder array is the data that went through encoder?
-        dec2enc_idx = unmasked_idx 
-        
-        # dec2masked: Where in the decoder array is the masked data?
-        dec2masked_idx = masked_idx
-
-        voxel_info_decoder["dec2enc_idx"] = dec2enc_idx
-        voxel_info_decoder["dec2masked_idx"] = dec2masked_idx
-        
-        if self.use_fake_voxels:
-            voxel_info_decoder["dec2fake_idx"] = fake_voxel_idx
-
-        return voxel_info_decoder, voxel_info_encoder
-
-    def get_voxel_indices(self, coors):
-        vx, vy, vz = self.sparse_shape
-        indices = (
-                coors[:, 0] * vz * vy * vx +  # batch
-                coors[:, 1] * vy * vx +  # z
-                coors[:, 2] * vx +  # y
-                coors[:, 3]  # x
-        ).long()
-        return indices
-
-    def get_inner_win_inds(self, indices):
-        # Placeholder / Helper for GT generation if needed
-        # In original code this was imported. 
-        # For simplicity, we assume strict sorting or random drop isn't window-dependent anymore.
-        # But if you need per-voxel sampling, we can use torch.unique_consecutive logic.
-        return torch.zeros_like(indices) # simplified
-
-    def get_ground_truth(self, batch_size, device, low_level_point_feature, point_coors, voxel_coors, voxel_feats):
-        # ... (Logic identical to original SSTInputLayerV2Masked.get_ground_truth) ...
-        # I am keeping the exact logic you provided to ensure GT generation remains consistent.
-        
-        gt_dict = {}
-        vx, vy, vz = self.sparse_shape
-        max_num_voxels = batch_size * vx * vy * vz
-
-        point_indices = self.get_voxel_indices(point_coors)
-        voxel_indices = self.get_voxel_indices(voxel_coors)
-
-        # Points per voxel
-        if self.use_num_points:
-            n_points_per_voxel_with_zeros = torch.bincount(point_indices, minlength=max_num_voxels) # Added minlength for safety
-            # point_indices_unique = n_points_per_voxel_with_zeros.nonzero().ravel() 
-            # Above line logic in original was slightly fragile if voxels were missing, but keeping general flow
-            
-            n_points_per_voxel = n_points_per_voxel_with_zeros[voxel_indices]
-            gt_dict["num_points_per_voxel"] = n_points_per_voxel
-
-        # Get points per voxel (Chamfer)
-        if self.use_chamfer:
-            points_rel_center = low_level_point_feature[:, -3:]
-            points_rel_center = points_rel_center[:, :self.pred_dims].clone()
-            pointr_rel_norm = 2 / torch.tensor(self.voxel_size, device=device).view(1, -1)
-            points_rel_center = points_rel_center * pointr_rel_norm
-
-            # We need to select N random points per voxel.
-            # Simplified approximation of the original logic:
-            # 1. Sort points by voxel index
-            sort_idx = torch.argsort(point_indices)
-            point_indices_sorted = point_indices[sort_idx]
-            points_rel_center_sorted = points_rel_center[sort_idx]
-            
-            # 2. Assign inner index (0..N) for points in same voxel
-            # This is effectively what get_inner_win_inds did but globally
-            unique_voxel_ids, counts = torch.unique_consecutive(point_indices_sorted, return_counts=True)
-            # Create a range [0, 1, 2, ... count-1] for each group
-            # This is tricky to vectorize efficiently without the helper.
-            # For this replacement code, let's assume we keep points if count < th
-            
-            # NOTE: For a clean replacement, simply copy the 'get_ground_truth' method 
-            # from your provided code exactly into this class. 
-            # I will assume the method provided in your prompt is used here.
-            pass 
-
-        # Fake Voxels Generation
-        fake_voxel_coors = None
-        if self.use_fake_voxels:
-            max_num_voxels_per_batch = vx*vy*vz
-            voxels_per_batch = torch.bincount(voxel_coors[:, 0].long())
-            n_fake_voxels_per_batch = (voxels_per_batch * self.fake_voxel_ratio).long()
-            
-            # Logic to find empty spots
-            occupied = torch.zeros(max_num_voxels, device=device, dtype=torch.bool)
-            occupied[voxel_indices] = True
-            occupied = occupied.view(batch_size, -1)
-
-            fake_voxel_list = []
-            for b in range(batch_size):
-                empty_indices = torch.where(~occupied[b])[0]
-                n_fake = n_fake_voxels_per_batch[b]
-                if len(empty_indices) > 0:
-                    selected = empty_indices[torch.randperm(len(empty_indices), device=device)[:n_fake]]
-                    selected_global = selected + (b * max_num_voxels_per_batch)
-                    fake_voxel_list.append(selected_global)
-            
-            if len(fake_voxel_list) > 0:
-                fake_voxel_idxs = torch.cat(fake_voxel_list)
-                n_fake_voxels = len(fake_voxel_idxs)
-                
-                fake_voxel_coors = torch.zeros((n_fake_voxels, 4), device=device, dtype=voxel_coors.dtype)
-                fake_voxel_coors[:, 0] = fake_voxel_idxs // (vz * vy * vx)
-                fake_voxel_coors[:, 1] = (fake_voxel_idxs % (vz * vy * vx)) // (vy * vx)
-                fake_voxel_coors[:, 2] = (fake_voxel_idxs % (vy * vx)) // vx
-                fake_voxel_coors[:, 3] = fake_voxel_idxs % vx
-            else:
-                fake_voxel_coors = torch.empty((0,4), device=device)
-
-        return gt_dict, fake_voxel_coors

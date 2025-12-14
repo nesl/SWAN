@@ -1031,6 +1031,8 @@ class DynamicVFE_New(nn.Module):
     image feature into voxel features in a point-wise manner.
     The number of points inside the voxel varies.
 
+    The main difference is that we calculate distance feature with 3d rather than 1d.
+
     Args:
         in_channels (int): Input channels of VFE. Defaults to 4.
         feat_channels (list(int)): Channels of features in VFE.
@@ -1074,6 +1076,7 @@ class DynamicVFE_New(nn.Module):
             in_channels += 3
         if with_voxel_center:
             in_channels += 3
+        # here we use 3d distance instead of 1d distance
         if with_distance:
             in_channels += 3
         self.in_channels = in_channels
@@ -1092,6 +1095,7 @@ class DynamicVFE_New(nn.Module):
         self.y_offset = self.vy / 2 + point_cloud_range[1]
         self.z_offset = self.vz / 2 + point_cloud_range[2]
         self.point_cloud_range = point_cloud_range
+        # This is never used?
         self.scatter = DynamicScatter(voxel_size, point_cloud_range, True)
 
         feat_channels = [self.in_channels] + list(feat_channels)
@@ -1115,7 +1119,7 @@ class DynamicVFE_New(nn.Module):
             voxel_size, point_cloud_range, average_points=True)
         self.fusion_layer = None
         if fusion_layer is not None:
-            self.fusion_layer = builder.build_fusion_layer(fusion_layer)
+            self.fusion_layer = MODELS.build(fusion_layer)
 
     
     def map_voxel_center_to_point(self, pts_coors, voxel_mean, voxel_coors):
@@ -1131,6 +1135,7 @@ class DynamicVFE_New(nn.Module):
         """
         # Step 1: scatter voxel into canvas
         # Calculate necessary things for canvas creation
+        # original implementation uses int, round is to get a better precision, but potentially we have to clamp it
         canvas_z = round(
             (self.point_cloud_range[5] - self.point_cloud_range[2]) / self.vz)
         canvas_y = round(
@@ -1207,6 +1212,9 @@ class DynamicVFE_New(nn.Module):
             features_ls.append(f_center)
 
         if self._with_distance:
+            # we set the distance feature as the 3D distance to origin
+            # but our output dimension is 1 rather than 3
+            # is this a mismatch?
             points_dist = torch.norm(features[:, :3], 2, 1, keepdim=True)
             features_ls.append(points_dist)
 

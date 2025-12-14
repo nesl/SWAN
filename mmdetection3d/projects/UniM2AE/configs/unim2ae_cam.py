@@ -1,4 +1,3 @@
-# Convnext Version
 _base_ = [
     'nuscenes.py',
     'cosine_2x.py',
@@ -47,7 +46,7 @@ drop_info_test = {
 drop_info = (drop_info_training, drop_info_test)
 
 model = dict(
-    type='UniM2AE',
+    type='UniM2AE_modular',
     data_preprocessor=dict(
         type='Det3DDataPreprocessor',
         voxel=True,
@@ -59,108 +58,7 @@ model = dict(
             max_voxels=(-1, -1)
         ),
     ),
-    fusion_module=dict(
-        type='MMIM',
-        volume_h=sparse_shape[0],
-        volume_w=sparse_shape[1],
-        volume_z=sparse_shape[2],
-        embed_dims=192,
-        strides=[1, 1],
-        positional_encoding=dict(
-            type='SinePositionalEncoding3D',
-            num_feats=192 // 3,
-            normalize=True
-        ),
-        encoder=dict(
-            type='TransformerLayerSequence',
-            num_layers=3,
-            transformerlayers=dict(
-                type='BaseTransformerLayer',
-                attn_cfgs=dict(
-                    type='MultiScaleDeformableAttention3D',
-                    embed_dims=192,
-                    num_heads=8,
-                    num_levels=2,
-                    num_points=4,
-                    im2col_step=64, # it seems like setting this don't necessary work, the the value have to fulfill (batch_size *6 )% im2col_step ==0
-                    dropout=0.0,
-                    batch_first=False,
-                    norm_cfg=None,
-                    init_cfg=None),
-                ffn_cfgs=dict(
-                    embed_dims=192),
-                feedforward_channels=192 * 4,
-                ffn_dropout=0.0,
-                operation_order=('self_attn', 'norm', 'ffn', 'norm')),
-            init_cfg=None
-        ),
-    ),
-
-    voxel_encoder=dict(
-        type='DynamicVFE_New',
-        in_channels=5,
-        feat_channels=[64, 128],
-        with_distance=False,
-        voxel_size=voxel_size,
-        with_cluster_center=True,
-        with_voxel_center=True,
-        return_gt_points=True,
-        point_cloud_range=point_cloud_range,
-        norm_cfg=dict(type='naiveSyncBN1d', eps=1e-3, momentum=0.01)
-    ),
-
-    middle_encoder=dict(
-        type='SSTInputLayerV2Masked',
-        window_shape=window_shape,
-        sparse_shape=sparse_shape,
-        voxel_size=voxel_size,
-        shuffle_voxels=True,
-        debug=True,
-        drop_info=drop_info,
-        pos_temperature=10000,
-        normalize_pos=False,
-        mute=True,
-        masking_ratio=masking_ratio,
-        drop_points_th=100,
-        pred_dims=3,  # x, y, z
-        use_chamfer=use_chamfer,
-        use_num_points=use_num_points,
-        use_fake_voxels=use_fake_voxels,
-        fake_voxels_ratio=fake_voxels_ratio
-    ),
-    
-    backbone=dict(
-        type='SSTv2',
-        d_model=[128, ] * encoder_blocks,
-        nhead=[8, ] * encoder_blocks,
-        num_blocks=encoder_blocks,
-        dim_feedforward=[256, ] * encoder_blocks,
-        output_shape=[200, 200],  # tot_point_cloud_range / voxel_size (50+50)/0.5
-        num_attached_conv=0,
-        # checkpoint_blocks=[0, 1, 2, 3, 4, 5, 6, 7], # Save the gpu memory but get slower
-        conv_kwargs=[
-            dict(kernel_size=3, dilation=1, padding=1, stride=1),
-            dict(kernel_size=3, dilation=1, padding=1, stride=1),
-            dict(kernel_size=3, dilation=2, padding=2, stride=1),
-        ],
-        conv_in_channel=128,
-        conv_out_channel=128,
-        debug=True,
-        masked=True,
-    ),
-
-    neck=dict(
-        type='SSTv2Decoder',
-        d_model=[128, ] * 6,
-        nhead=[8, ] * 6,
-        num_blocks=6,
-        dim_feedforward=[256, ] * 6,
-        output_shape=sparse_shape,
-        num_attached_conv=-1,
-        debug=True,
-        use_fake_voxels=use_fake_voxels,
-    ),
-
+   
     bbox_head=dict(
         type='ReconstructionHead',
         in_channels=192,
@@ -197,14 +95,23 @@ model = dict(
     ),
     
     camera_backbone=dict(
-        type='MAEConvNeXtEncoder',  # The new class name
-        arch='tiny',                # Channels: 768 (matches Swin Tiny output)
+        type='MAESwinEncoder',
         img_size=img_size,
+        patch_size=4,
         in_chans=3,
+        embed_dim=96,
+        depths=[2, 2, 6, 2],
+        num_heads=[3, 6, 12, 24],
+        window_size=7,
+        # common configs
+        mlp_ratio=4,
+        qkv_bias=True,
+        qk_scale=None,
+        drop_rate=0.0,
+        drop_path_rate=0.0,
+        ape=False,
+        patch_norm=True,
         mask_ratio=masking_ratio_img,
-        use_grn=True,               # ConvNeXt V2
-        sparse = True,               # Sparse Attention
-        drop_path_rate=0.2,         # Standard for Tiny
     ),
     
     camera_vtransform=dict(
@@ -259,11 +166,48 @@ model = dict(
         norm_pix_loss=True,
     ),
 
+    fusion_module=dict(
+        type='MMIM',
+        volume_h=sparse_shape[0],
+        volume_w=sparse_shape[1],
+        volume_z=sparse_shape[2],
+        embed_dims=192,
+        strides=[1, 1],
+        positional_encoding=dict(
+            type='SinePositionalEncoding3D',
+            num_feats=192 // 3,
+            normalize=True
+        ),
+        encoder=dict(
+            type='TransformerLayerSequence',
+            num_layers=3,
+            transformerlayers=dict(
+                type='BaseTransformerLayer',
+                attn_cfgs=dict(
+                    type='MultiScaleDeformableAttention3D',
+                    embed_dims=192,
+                    num_heads=8,
+                    num_levels=2,
+                    num_points=4,
+                    im2col_step=64,
+                    dropout=0.0,
+                    batch_first=False,
+                    norm_cfg=None,
+                    init_cfg=None),
+                ffn_cfgs=dict(
+                    embed_dims=192),
+                feedforward_channels=192 * 4,
+                ffn_dropout=0.0,
+                operation_order=('self_attn', 'norm', 'ffn', 'norm')),
+            init_cfg=None
+        ),
+    ),
+
 )
 
 
 # optimizer
-lr = 1e-4  # max learning rate
+lr = 2.5e-4  # max learning rate
 optim_wrapper = dict(
     type='AmpOptimWrapper',
     optimizer=dict(type='AdamW', lr=lr, betas=(0.95, 0.99), weight_decay=0.01),
