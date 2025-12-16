@@ -7,83 +7,44 @@ from mmdet3d.registry import MODELS
 
 
 @MODELS.register_module()
-class ReconstructionHead(BaseModule):
-    """Anchor head for SECOND/PointPillars/MVXNet/PartA2.
+class LIDARReconstructionHead(BaseModule):
 
-    Args:
-        num_classes (int): Number of classes.
-        in_channels (int): Number of channels in the input feature map.
-        train_cfg (dict): Train configs.
-        test_cfg (dict): Test configs.
-        feat_channels (int): Number of channels of the feature map.
-        use_direction_classifier (bool): Whether to add a direction classifier.
-        anchor_generator(dict): Config dict of anchor generator.
-        assigner_per_size (bool): Whether to do assignment for each separate
-            anchor size.
-        assign_per_class (bool): Whether to do assignment for each class.
-        diff_rad_by_sin (bool): Whether to change the difference into sin
-            difference for box regression loss.
-        dir_offset (float | int): The offset of BEV rotation angles.
-            (TODO: may be moved into box coder)
-        dir_limit_offset (float | int): The limited range of BEV
-            rotation angles. (TODO: may be moved into box coder)
-        bbox_coder (dict): Config dict of box coders.
-        loss_cls (dict): Config of classification loss.
-        loss_bbox (dict): Config of localization loss.
-        loss_dir (dict): Config of direction classifier loss.
-    """
 
     def __init__(self,
-                 in_channels,
-                 train_cfg,
-                 test_cfg,
-                 feat_channels=256,
-                 num_chamfer_points=20,
-                 pred_dims=3,
-                 only_masked=True,
-                 relative_error=True,
-                 loss_weights=None,
-                 use_chamfer=True,
-                 use_num_points=True,
-                 use_fake_voxels=True,
+                 in_channels=128, # CHECK pts feat assuming z is not flatten, e.g. 1, 128, 720, 720, 2
+                 grid_size=(720, 720, 2),
+                 point_cloud_range=[-54, -54, -5, 54, 54, 3],
+                 voxel_size=[0.15, 0.15, 4],  
+                 num_chamfer_points=20,           # Number of points to predict per voxel
+                 loss_chamfer=dict(type='ChamferLoss', loss_weight=1.0), # Placeholder name
+                 loss_occupancy=dict(type='mmdet.FocalLoss', use_sigmoid=True, gamma=2.0, alpha=0.25, loss_weight=1.0),
                  init_cfg=None):
+        """LIDAR Reconstruction Head."""
         super().__init__(init_cfg=init_cfg)
         self.in_channels = in_channels
-        self.feat_channels = feat_channels
         self.num_chamfer_points = num_chamfer_points
-        self.pred_dims = pred_dims
-        self.train_cfg = train_cfg
-        self.test_cfg = test_cfg
-        self.fp16_enabled = False
+        self.point_cloud_range = point_cloud_range
+        self.voxel_size = voxel_size
+        self.grid_size = grid_size
+        self.pred_dims = 3  # x, y, z
+        self.loss_chamfer = MODELS.build(loss_chamfer) if loss_chamfer is not None else None
+        self.loss_occupancy = MODELS.build(loss_occupancy) if loss_occupancy is not None else None
 
-        # build loss function
-        self.only_masked = only_masked
-        self.fp16_enabled = False
-        self.chamfer_loss = self.chamfer_distance_loss  # ChamferDistance(mode='l2', reduction='mean')
-        self.loss_weights = loss_weights
-        self.num_points_loss = self.rel_error_loss_2 if relative_error else smooth_l1_loss
-        self.use_chamfer = use_chamfer
-        self.use_num_points = use_num_points
-        self.use_fake_voxels = use_fake_voxels
-        assert use_chamfer or use_num_points or use_fake_voxels, \
-            "Need to use at least one of chamfer, num_points, and fake_voxels"
+        # predict voxel is empty
+        self.conv_occupied = nn.Sequential(
+            nn.Conv3d(in_channels, in_channels // 2, kernel_size=1),
+            nn.BatchNorm3d(in_channels // 2),
+            nn.ReLU(),
+            nn.Conv3d(in_channels // 2, 1, kernel_size=1)
+        )
+        # predict num_chamfer_points per voxel in 3d
+        self.conv_chamfer = nn.Sequential(
+            nn.Conv3d(in_channels, in_channels // 2, kernel_size=1),
+            nn.BatchNorm3d(in_channels // 2),
+            nn.ReLU(),
+            nn.Conv3d(in_channels // 2, num_chamfer_points * 3, kernel_size=1)
+        )
 
-        self._init_layers()
-
-        if init_cfg is None and use_fake_voxels:
-            self.init_cfg = dict(
-                type='Normal',
-                layer='Conv1d',
-                std=0.01,
-                override=dict(
-                    type='Normal', name='conv_occupied', std=0.01, bias_prob=0.01))
-
-    def _init_layers(self):
-        """Initialize neural network layers of the head."""
-        self.conv_occupied = nn.Conv1d(self.feat_channels, 1, 1) if self.use_fake_voxels else None
-        self.conv_num_points = nn.Conv1d(self.feat_channels, 1, 1) if self.use_num_points else None
-        self.conv_chamfer = nn.Conv1d(self.feat_channels, self.num_chamfer_points * self.pred_dims, 1) \
-            if self.use_chamfer else None
 
     def _apply_1dconv(self, conv, x):
         if conv is not None:
@@ -94,7 +55,7 @@ class ReconstructionHead(BaseModule):
     def forward(self, x, show=None):
         """Forward pass.
 
-        Args:
+        Args:r
             feats (list[torch.Tensor]): Multi-level features, e.g.,
                 features produced by FPN.
 
@@ -190,60 +151,41 @@ class ReconstructionHead(BaseModule):
         return loss
 
     @staticmethod
-    @staticmethod
-    def chamfer_distance_loss(src, trg, trg_padding, criterion_mode="l2", chunk_size=1024):
+    def chamfer_distance_loss(src, trg, trg_padding, criterion_mode="l2"):
         """
-        Optimized chamfer loss using cdist for memory efficiency.
-        - Uses cdist for pairwise distances (no coord expansion).
-        - Chunks over B (n_masked) to cap memory.
-        - Assumes l2 by default; supports l1. For smooth_l1, chunks the original expand logic.
 
         :param src: predicted point positions (B, N, C)
         :param trg: gt point positions (B, M, C)
         :param trg_padding: Which points are padded (B, M)
         :type trg_padding: torch.Tensor([torch.bool])
         :param criterion_mode: way of calculating distance, l1, l2, or smooth_l1
-        :param chunk_size: Batch chunks to process at once (tune based on GPU mem; 1024 ~ safe for 40GB)
         :return:
         """
-        B, N, C = src.shape
-        M = trg.shape[1]
-        device = src.device
+        if criterion_mode == 'smooth_l1':
+            criterion = smooth_l1_loss
+        elif criterion_mode == 'l1':
+            criterion = l1_loss
+        elif criterion_mode == 'l2':
+            criterion = mse_loss
+        else:
+            raise NotImplementedError
+        # src->(B,N,C) dst->(B,M,C)
+        src_expand = src.unsqueeze(2).repeat(1, 1, trg.shape[1], 1)  # (B,N M,C)
+        trg_expand = trg.unsqueeze(1).repeat(1, src.shape[1], 1, 1)  # (B,N M,C)
+        trg_padding_expand = trg_padding.unsqueeze(1).repeat(1, src.shape[1], 1)  # (B,N M)
 
-        loss_src_total = 0.0
-        loss_trg_total = 0.0
+        distance = criterion(src_expand, trg_expand, reduction='none').sum(-1)  # (B,N M)
+        distance[trg_padding_expand] = np.inf
 
-        for start in range(0, B, chunk_size):
-            end = min(start + chunk_size, B)
-            chunk_b = end - start
-            src_chunk = src[start:end]
-            trg_chunk = trg[start:end]
-            trg_padding_chunk = trg_padding[start:end]
+        src2trg_distance, indices1 = torch.min(distance, dim=2)  # (B,N)
+        trg2src_distance, indices2 = torch.min(distance, dim=1)  # (B,M)
+        trg2src_distance[trg_padding] = 0
 
-            if criterion_mode in ['l2', 'l1']:
-                p = 2 if criterion_mode == 'l2' else 1
-                dist = torch.cdist(src_chunk, trg_chunk, p=p)  # (b, N, M)
-                if p == 2:
-                    dist = dist ** 2  # For l2, cdist gives sqrt(sum sq), but we need sum sq for mse equiv
-            elif criterion_mode == 'smooth_l1':
-                # Fallback to chunked expand for smooth_l1 (per-element)
-                src_expand = src_chunk.unsqueeze(2).repeat(1, 1, M, 1)  # (b, N, M, C)
-                trg_expand = trg_chunk.unsqueeze(1).repeat(1, N, 1, 1)  # (b, N, M, C)
-                dist = smooth_l1_loss(src_expand, trg_expand, reduction='none').sum(-1)  # (b, N, M)
-            else:
-                raise NotImplementedError
-
-            dist[trg_padding_chunk.unsqueeze(1).expand(-1, N, -1)] = float('inf')
-
-            src2trg_distance = torch.min(dist, dim=2)[0]  # (b, N)
-            trg2src_distance = torch.min(dist, dim=1)[0]  # (b, M)
-            trg2src_distance[trg_padding_chunk] = 0
-
-            loss_src_total += src2trg_distance.sum()
-            loss_trg_total += (trg2src_distance.sum(1) / (~trg_padding_chunk).sum(1).clamp(min=1)).sum()
-
-        loss_src = loss_src_total / (B * N)
-        loss_trg = loss_trg_total / B
+        loss_src = torch.mean(src2trg_distance)
+        # Since there is different number of points in each voxel we want to have each voxel matter equally much
+        # and to not have voxels with more points be more important to mimic
+        loss_trg = trg2src_distance.sum(1) / (~trg_padding).sum(1)  # B
+        loss_trg = loss_trg.mean()
 
         return loss_src, loss_trg
 

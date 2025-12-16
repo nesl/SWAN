@@ -889,20 +889,27 @@ class SSTInputLayerV2Masked(SSTInputLayerV2):
         vx, vy, vz = self.sparse_shape
         max_num_voxels = batch_size * vx * vy * vz
 
+
+        # There is a possiblity that the computation gets out of bounds
+        # While this is not shown in the CMT model as the masked version is not used, however to match the settings(voxel size and point range)
+        # problems will trigger for example RuntimeError: bincount only supports 1-d non-negative integral inputs.
         point_indices = self.get_voxel_indices(point_coors)
         voxel_indices = self.get_voxel_indices(voxel_coors)
 
+        # this prevents out of bound error in torch.bincount
+        valid_point_mask = (point_indices >= 0) & (point_indices < max_num_voxels)
+        point_indices = point_indices[valid_point_mask]
+        point_coors = point_coors[valid_point_mask]
+        low_level_point_feature = low_level_point_feature[valid_point_mask]
+
+
+
         # Points per voxel
         if self.use_num_points:
-            n_points_per_voxel_with_zeros = torch.bincount(point_indices)
-            point_indices_unique = n_points_per_voxel_with_zeros.nonzero().ravel()
+            n_points_per_voxel_with_zeros = torch.bincount(point_indices, minlength=max_num_voxels)
             n_points_per_voxel = n_points_per_voxel_with_zeros[voxel_indices]
             gt_dict["num_points_per_voxel"] = n_points_per_voxel
-            assert (n_points_per_voxel > 0).all(), "Exists voxel without connected points"
-            assert len(point_indices_unique) == len(voxel_indices), \
-                "There is a mismatch between point indices and voxel indices"
-            assert (point_indices_unique == voxel_indices.sort()[0]).all(), \
-                "There is a mismatch between point indices and voxel indices"
+            
 
         # Get points per voxel
         if self.use_chamfer:

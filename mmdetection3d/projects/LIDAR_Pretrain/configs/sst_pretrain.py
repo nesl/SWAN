@@ -1,6 +1,6 @@
 _base_ = ['../../../configs/_base_/default_runtime.py']
 custom_imports = dict(
-    imports=['projects.BEVFusion.bevfusion', 'projects.UniM2AE', 'projects.CMT'], allow_failed_imports=False)
+    imports=[ 'projects.LIDAR_Pretrain', 'projects.UniM2AE'], allow_failed_imports=False)
 
 # model settings
 # Voxel size for voxel encoder
@@ -8,13 +8,15 @@ custom_imports = dict(
 # If point cloud range is modified, do remember to change all related
 # keys in the config.
 # voxel_size = [0.075, 0.075, 0.2]
-voxel_size = (0.15, 0.15, 4) # I PRETRAINED WITH THIS
-grid_size = (720, 720, 2)
-window_shape=(16, 16, 1)
-sparse_shape = (720, 720, 2)
+voxel_size = (0.15, 0.15, 4)
+point_cloud_range = [-54.0, -54.0, -5.0, 54.0, 54.0, 3.0]
+grid_size = (720, 720, 2) 
+sparse_shape = (720,720,2) # FIXED: Must match grid_size for index alignment
+window_shape = (16, 16, 1)
 encoder_blocks = 8
 out_size_factor = 4
-point_cloud_range = [-54.0, -54.0, -5.0, 54.0, 54.0, 3.0]
+
+
 class_names = [
     'car', 'truck', 'construction_vehicle', 'bus', 'trailer', 'barrier',
     'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone'
@@ -40,35 +42,30 @@ drop_info_training = {
     3: {'max_tokens': 200, 'drop_range': (100, 200)},
     4: {'max_tokens': 256, 'drop_range': (200, 100000)},
 }
-drop_info_test = {
-    0: {'max_tokens': 30, 'drop_range': (0, 30)},
-    1: {'max_tokens': 60, 'drop_range': (30, 60)},
-    2: {'max_tokens': 100, 'drop_range': (60, 100)},
-    3: {'max_tokens': 200, 'drop_range': (100, 200)},
-    4: {'max_tokens': 256, 'drop_range': (200, 100000)},
-}
+drop_info_test = drop_info_training
+
 drop_info = (drop_info_training, drop_info_test)
-# backend_args = dict(
-#     backend='petrel',
-#     path_mapping=dict({
-#         './data/nuscenes/':
-#         's3://openmmlab/datasets/detection3d/nuscenes/',
-#         'data/nuscenes/':
-#         's3://openmmlab/datasets/detection3d/nuscenes/',
-#         './data/nuscenes_mini/':
-#         's3://openmmlab/datasets/detection3d/nuscenes/',
-#         'data/nuscenes_mini/':
-#         's3://openmmlab/datasets/detection3d/nuscenes/'
-#     }))
+# Loss Settings
+use_chamfer = True
+use_num_points = True
+use_fake_voxels = True
+loss_weights = dict(
+    loss_occupied=1.0,
+    loss_num_points_masked=1.0,
+    loss_chamfer_src_masked=1.0,
+    loss_chamfer_dst_masked=1.0,
+    loss_num_points_unmasked=0.0, # Usually don't compute loss on visible parts
+    loss_chamfer_src_unmasked=0.0,
+    loss_chamfer_dst_unmasked=0.0
+)
 backend_args = None
 
 model = dict(
-    type='CmtDetector',
-    enable_sst_swin=True,
+    type='LIDAR_PRETRAIN',
     data_preprocessor=dict(
         type='Det3DDataPreprocessor',
         voxel=True,
-        voxel_type='dynamic',  # <--- here
+        voxel_type='dynamic',
         voxel_layer=dict(
             max_num_points=-1,
             point_cloud_range=point_cloud_range,
@@ -88,180 +85,67 @@ model = dict(
         point_cloud_range=point_cloud_range,
         norm_cfg=dict(type='naiveSyncBN1d', eps=1e-3, momentum=0.01)
     ),
-#   data_preprocessor=dict(
-#         type='Det3DDataPreprocessor',
-#         voxel=True,          # Enable voxelization
-#         voxel_type='hard',   # <--- CRITICAL: Explicitly set to 'hard' (default)
-#         voxel_layer=dict(
-#             max_num_points=10,            # Match your old config
-#             voxel_size=voxel_size,        # Match your old config
-#             max_voxels=(120000, 160000),  # Match your old config
-#             point_cloud_range=point_cloud_range
-#         )
-#     ),
-#     pts_voxel_encoder=dict(type='HardSimpleVFE', num_features=5),
     pts_middle_encoder=dict(
-        type='SSTInputLayerV2',
-        drop_info=drop_info,
+        type='SSTInputLayerV2Masked',
         window_shape=window_shape,
         sparse_shape=sparse_shape,
+        voxel_size=voxel_size,
         shuffle_voxels=True,
         debug=True,
+        drop_info=drop_info,
         pos_temperature=10000,
         normalize_pos=False,
         mute=True,
+        masking_ratio=0.7,
+        drop_points_th=100,
+        pred_dims=3,
+        use_chamfer=use_chamfer,
+        use_num_points=use_num_points,
+        use_fake_voxels=use_fake_voxels,
+        fake_voxels_ratio=0.1
     ),
     pts_backbone=dict(
         type='SSTv2',
-        d_model=[128, ] * encoder_blocks,
-        nhead=[8, ] * encoder_blocks,
-        num_blocks=encoder_blocks,
-        dim_feedforward=[256, ] * encoder_blocks,
-        output_shape=[720, 720, 2],  # tot_point_cloud_range / voxel_size (50+50)/0.5
-        num_attached_conv=0,
-        # checkpoint_blocks=[0, 1, 2, 3, 4, 5, 6, 7], # Save the gpu memory but get slower
-        conv_kwargs=[
-            dict(kernel_size=3, dilation=1, padding=1, stride=1),
-            dict(kernel_size=3, dilation=1, padding=1, stride=1),
-            dict(kernel_size=3, dilation=2, padding=2, stride=1),
-        ],
+        d_model=[128] * 8,
+        nhead=[8] * 8,
+        num_blocks=8,
+        dim_feedforward=[256] * 8,
+        output_shape=[200, 200], 
+        num_attached_conv=0, # Keep sparse!
         conv_in_channel=128,
         conv_out_channel=128,
         debug=True,
-        masked=False,
+        masked=True, #
     ),
-
-    # BEGIN CAMERA COMPONENTS
-
-    # Hopefully I can override w my saved model parameters...
-    img_backbone = dict(
-        type='mmdet.SwinTransformer',
-        embed_dims=96,
-        depths=[2, 2, 6, 2],
-        num_heads=[3, 6, 12, 24],
-        window_size=7,
-        mlp_ratio=4,
-        qkv_bias=True,
-        qk_scale=None,
-        drop_rate=0.0,
-        attn_drop_rate=0.0,
-        drop_path_rate=0.2,
-        patch_norm=True,
-        out_indices=[1, 2, 3],
-        with_cp=False,
-        convert_weights=True,
-        init_cfg=dict(
-            type='Pretrained',
-            checkpoint=  # noqa: E251
-            'https://github.com/SwinTransformer/storage/releases/download/v1.0.0/swin_tiny_patch4_window7_224.pth'  # noqa: E501
-        )
+    pts_neck = dict(
+        type='SSTv2Decoder',
+        d_model=[128] * 6,
+        nhead=[8] * 6,
+        num_blocks=6,
+        dim_feedforward=[256] * 6,
+        output_shape=sparse_shape,
+        num_attached_conv=0,
+        debug=True,
+        use_fake_voxels=use_fake_voxels,
+        in_channel=128, 
     ),
-    img_neck=dict(
-        type='GeneralizedLSSFPN',
-        in_channels=[192, 384, 768],
-        out_channels=256,
-        start_level=0,
-        num_outs=3,
-        norm_cfg=dict(type='BN2d', requires_grad=True),
-        act_cfg=dict(type='ReLU', inplace=True),
-        upsample_cfg=dict(mode='bilinear', align_corners=False)),
-
-    pts_bbox_head=dict(
-        type='CmtHead',
-        in_channels=512,
-        hidden_dim=256,
-        downsample_scale=out_size_factor,
-        common_heads=dict(center=(2, 2), height=(1, 2), dim=(3, 2), rot=(2, 2), vel=(2, 2)),
-        tasks=[
-            dict(num_class=10, class_names=[
-                'car', 'truck', 'construction_vehicle',
-                'bus', 'trailer', 'barrier',
-                'motorcycle', 'bicycle',
-                'pedestrian', 'traffic_cone'
-            ]),
-        ],
-        bbox_coder=dict(
-            type='MultiTaskBBoxCoder',
-            post_center_range=[-61.2, -61.2, -10.0, 61.2, 61.2, 10.0],
-            pc_range=point_cloud_range,
-            max_num=300,
-            voxel_size=voxel_size,
-            num_classes=10), 
-        separate_head=dict(
-            type='SeparateTaskHead', init_bias=-2.19, final_kernel=1),
-        transformer=dict(
-            type='CmtTransformer',
-            decoder=dict(
-                type='PETRTransformerDecoder',
-                return_intermediate=True,
-                num_layers=6,
-                transformerlayers=dict(
-                    type='PETRTransformerDecoderLayer',
-                    with_cp=False,
-                    attn_cfgs=[
-                        dict(
-                            type='MultiheadAttention',
-                            embed_dims=256,
-                            num_heads=8,
-                            dropout=0.1),
-                        dict(
-                            type='PETRMultiheadFlashAttention',
-                            embed_dims=256,
-                            num_heads=8,
-                            dropout=0.1),
-                        ],
-                    ffn_cfgs=dict(
-                        type='FFN',
-                        embed_dims=256,
-                        feedforward_channels=1024,
-                        num_fcs=2,
-                        ffn_drop=0.,
-                        act_cfg=dict(type='ReLU', inplace=True),
-                    ),
-
-                    feedforward_channels=1024, #unused
-                    operation_order=('self_attn', 'norm', 'cross_attn', 'norm',
-                                     'ffn', 'norm')),
-            )),
-        loss_cls=dict(type='mmdet.FocalLoss', use_sigmoid=True, gamma=2, alpha=0.25, reduction='mean', loss_weight=2.0),
-        loss_bbox=dict(type='mmdet.L1Loss', reduction='mean', loss_weight=0.25),
-        loss_heatmap=dict(type='mmdet.GaussianFocalLoss', reduction='mean', loss_weight=1.0),
-    ),
-    train_cfg=dict(
-        pts=dict(
-            dataset='nuScenes',
-            assigner=dict(
-                type='HungarianAssigner3D_CMT',
-                # cls_cost=dict(type='ClassificationCost', weight=2.0),
-                cls_cost=dict(type='mmdet.FocalLossCost', weight=2.0),
-                reg_cost=dict(type='BBox3DL1Cost', weight=0.25),
-                iou_cost=dict(type='IoU3DCost_CMT', weight=0.0), # Fake cost. This is just to make it compatible with DETR head. 
-                pc_range=point_cloud_range,
-                code_weights=[2.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2, 0.2],
-            ),
-            pos_weight=-1,
-            gaussian_overlap=0.1,
-            min_radius=2,
-            grid_size=grid_size,  # [x_len, y_len, 1]
-            voxel_size=voxel_size,
-            out_size_factor=out_size_factor,
-            code_weights=[2.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2, 0.2],
-            point_cloud_range=point_cloud_range)),
-    test_cfg=dict(
-        pts=dict(
-            dataset='nuScenes',
-            grid_size=grid_size,
-            out_size_factor=out_size_factor,
-            pc_range=point_cloud_range,
-            voxel_size=voxel_size,
-            nms_type=None,
-            nms_thr=0.2,
-            use_rotate_nms=True,
-            max_num=200
-        )
+    bbox_head=dict(
+        type='ReconstructionHead',
+        in_channels=128, # Must match decoder d_model
+        feat_channels=128,
+        num_chamfer_points=20,
+        pred_dims=3,
+        only_masked=True,
+        relative_error=False,
+        loss_weights=loss_weights,
+        use_chamfer=use_chamfer,
+        use_num_points=use_num_points,
+        use_fake_voxels=use_fake_voxels,
+        train_cfg=None,
+        test_cfg=None 
+        
     )
 )
-
 
 db_sampler = dict(
     data_root=data_root,
@@ -301,11 +185,6 @@ db_sampler = dict(
 
 train_pipeline = [
     dict(
-        type='BEVLoadMultiViewImageFromFiles',
-        to_float32=True,
-        color_type='color',
-        backend_args=backend_args),
-    dict(
         type='LoadPointsFromFile',
         coord_type='LIDAR',
         load_dim=5,
@@ -324,24 +203,11 @@ train_pipeline = [
         with_bbox_3d=True,
         with_label_3d=True,
         with_attr_label=False),
-    dict(
-        type='ImageAug3D',
-        final_dim=[256, 704],
-        resize_lim=[0.38, 0.55],
-        bot_pct_lim=[0.0, 0.0],
-        rot_lim=[-5.4, 5.4],
-        rand_flip=True,
-        is_train=True),
+
     dict(
         type='ObjectSample',
         db_sampler= db_sampler
     ),
-    dict(
-        type='BEVFusionGlobalRotScaleTrans',
-        scale_ratio_range=[0.9, 1.1],
-        rot_range=[-0.78539816, 0.78539816],
-        translation_std=0.5),
-    dict(type='BEVFusionRandomFlip3D'),
     dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
     dict(type='ObjectRangeFilter', point_cloud_range=point_cloud_range),
     dict(
@@ -351,17 +217,6 @@ train_pipeline = [
             'barrier', 'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone'
         ]),
     # Actually, 'GridMask' is not used here
-    dict(
-        type='GridMask',
-        use_h=True,
-        use_w=True,
-        max_epoch=6,
-        rotate=1,
-        offset=False,
-        ratio=0.5,
-        mode=1,
-        prob=0.0,
-        fixed_prob=True),
     dict(type='PointShuffle'),
     dict(
         type='Pack3DDetInputs',
@@ -380,11 +235,6 @@ train_pipeline = [
 
 test_pipeline = [
     dict(
-        type='BEVLoadMultiViewImageFromFiles',
-        to_float32=True,
-        color_type='color',
-        backend_args=backend_args),
-    dict(
         type='LoadPointsFromFile',
         coord_type='LIDAR',
         load_dim=5,
@@ -399,14 +249,6 @@ test_pipeline = [
         remove_close=True,
         backend_args=backend_args),
     dict(
-        type='ImageAug3D',
-        final_dim=[256, 704],
-        resize_lim=[0.48, 0.48],
-        bot_pct_lim=[0.0, 0.0],
-        rot_lim=[0.0, 0.0],
-        rand_flip=False,
-        is_train=False),
-    dict(
         type='PointsRangeFilter',
         point_cloud_range=[-54.0, -54.0, -5.0, 54.0, 54.0, 3.0]),
     dict(
@@ -420,8 +262,8 @@ test_pipeline = [
 ]
 
 train_dataloader = dict(
-    batch_size=4,
-    num_workers=12,
+    batch_size=2,
+    num_workers=16,
     persistent_workers=True,
     sampler=dict(type='DefaultSampler', shuffle=True),
     dataset=dict(
@@ -471,8 +313,8 @@ visualizer = dict(
     type='Det3DLocalVisualizer', vis_backends=vis_backends, name='visualizer')
 
 optim_wrapper = dict(
-    type='AmpOptimWrapper',  # Native Mixed Precision wrapper
-    dtype='bfloat16',        # Use 'bfloat16' for your H100. Use 'float16' otherwise.
+    type='OptimWrapper',  # Native Mixed Precision wrapper
+    
     optimizer=dict(
         type='AdamW',
         lr=0.0001,
@@ -481,8 +323,6 @@ optim_wrapper = dict(
     # Parameter-specific learning rates move here
     paramwise_cfg=dict(
         custom_keys={
-            'img_backbone': dict(lr_mult=0.01, decay_mult=5),
-            'img_neck': dict(lr_mult=0.1),
             'pts_backbone': dict(lr_mult=0.1),
         }
     ),
