@@ -8,12 +8,11 @@ custom_imports = dict(
 # If point cloud range is modified, do remember to change all related
 # keys in the config.
 # voxel_size = [0.075, 0.075, 0.2]
-voxel_size = (0.3, 0.3, 8) # I PRETRAINED WITH THIS
-grid_size = (360, 360, 1)
-window_shape=(12, 12, 1)
-sparse_shape = (360, 360, 1)
-encoder_blocks = 4
-out_size_factor = 2
+voxel_size = (0.15, 0.15, 8) # I PRETRAINED WITH THIS
+grid_size = (720, 720, 1)
+window_shape=(16, 16, 1)
+sparse_shape = (720, 720, 1)
+out_size_factor = 4
 point_cloud_range = [-54.0, -54.0, -5.0, 53.95, 53.95, 2.95]
 class_names = [
     'car', 'truck', 'construction_vehicle', 'bus', 'trailer', 'barrier',
@@ -33,33 +32,7 @@ data_prefix = dict(
     CAM_BACK_LEFT='samples/CAM_BACK_LEFT',
     sweeps='sweeps/LIDAR_TOP')
 input_modality = dict(use_lidar=True, use_camera=True)
-drop_info_training = {
-    0: {'max_tokens': 30, 'drop_range': (0, 30)},
-    1: {'max_tokens': 60, 'drop_range': (30, 60)},
-    2: {'max_tokens': 100, 'drop_range': (60, 100)},
-    3: {'max_tokens': 200, 'drop_range': (100, 200)},
-    4: {'max_tokens': 256, 'drop_range': (200, 100000)},
-}
-drop_info_test = {
-    0: {'max_tokens': 30, 'drop_range': (0, 30)},
-    1: {'max_tokens': 60, 'drop_range': (30, 60)},
-    2: {'max_tokens': 100, 'drop_range': (60, 100)},
-    3: {'max_tokens': 200, 'drop_range': (100, 200)},
-    4: {'max_tokens': 256, 'drop_range': (200, 100000)},
-}
-drop_info = (drop_info_training, drop_info_test)
-# backend_args = dict(
-#     backend='petrel',
-#     path_mapping=dict({
-#         './data/nuscenes/':
-#         's3://openmmlab/datasets/detection3d/nuscenes/',
-#         'data/nuscenes/':
-#         's3://openmmlab/datasets/detection3d/nuscenes/',
-#         './data/nuscenes_mini/':
-#         's3://openmmlab/datasets/detection3d/nuscenes/',
-#         'data/nuscenes_mini/':
-#         's3://openmmlab/datasets/detection3d/nuscenes/'
-#     }))
+
 backend_args = None
 
 model = dict(
@@ -101,34 +74,34 @@ model = dict(
 #     ),
 #     pts_voxel_encoder=dict(type='HardSimpleVFE', num_features=5),
     pts_middle_encoder=dict(
-        type='SSTInputLayerV2',
-        drop_info=drop_info,
+        type='FlatFormer',
+        in_channels=128,
+        num_heads=8,
+        num_blocks=2,
+        activation="gelu",
         window_shape=window_shape,
         sparse_shape=sparse_shape,
-        shuffle_voxels=True,
-        debug=True,
+        output_shape=[sparse_shape[0], sparse_shape[1]],
         pos_temperature=10000,
         normalize_pos=False,
-        mute=True,
+        group_size=144,
     ),
+    
     pts_backbone=dict(
-        type='SSTv2',
-        d_model=[128, ] * encoder_blocks,
-        nhead=[8, ] * encoder_blocks,
-        num_blocks=encoder_blocks,
-        dim_feedforward=[256, ] * encoder_blocks,
-        output_shape=[grid_size[0], grid_size[1]],  # tot_point_cloud_range / voxel_size (50+50)/0.5
-        num_attached_conv=2,
-        # checkpoint_blocks=[0, 1, 2, 3, 4, 5, 6, 7], # Save the gpu memory but get slower
-        conv_kwargs=[
-            dict(kernel_size=3, dilation=1, padding=1, stride=1),
-            dict(kernel_size=3, dilation=1, padding=1, stride=2),
-            # dict(kernel_size=3, dilation=2, padding=2, stride=1),
-        ],
-        conv_in_channel=128,
-        conv_out_channel=512,
-        debug=True,
-        masked=False,
+        type='SECOND',
+        in_channels=128,
+        out_channels=[64, 128],
+        layer_nums=[3, 3],
+        layer_strides=[2, 2],
+        conv_cfg=dict(type='Conv2d', bias=False),
+        norm_cfg=dict(type='naiveSyncBN2d', eps=1e-3, momentum=0.01),
+    ),
+    pts_neck=dict(
+        type='SECONDFPN',
+        norm_cfg=dict(type='naiveSyncBN2d', eps=1e-3, momentum=0.01),
+        in_channels=[64, 128],
+        upsample_strides=[0.5, 1],
+        out_channels=[256, 256]
     ),
 
     # BEGIN CAMERA COMPONENTS
@@ -421,8 +394,8 @@ test_pipeline = [
 ]
 
 train_dataloader = dict(
-    batch_size=10,
-    num_workers=12,
+    batch_size=9,
+    num_workers=16,
     persistent_workers=True,
     sampler=dict(type='DefaultSampler', shuffle=True),
     dataset=dict(
@@ -496,7 +469,7 @@ param_scheduler = [
         type='OneCycleLR',
         total_steps=20,            # Total epochs
         by_epoch=True,             # It's an epoch-based scheduler
-        eta_max=0.0001,            # Max LR
+        eta_max=0.0005,            # Max LR
         pct_start=0.4,             # Matches step_ratio_up=0.4
         div_factor=8.0,            # Matches target_ratio=(8, ...)
         final_div_factor=1e4,      # Standard decay

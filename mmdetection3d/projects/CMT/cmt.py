@@ -11,6 +11,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 
+from mmdet3d.models.voxel_encoders import DynamicVFE
 from mmdet3d.structures import bbox3d2result
 from mmdet3d.models.detectors.mvx_two_stage import MVXTwoStageDetector
 from ..UniM2AE.sst_models import DynamicVFE_New
@@ -29,16 +30,16 @@ class CmtDetector(MVXTwoStageDetector):
                  **kwargs):
         super(CmtDetector, self).__init__(**kwargs)
         self.enable_sst_swin = enable_sst_swin
-        if self.enable_sst_swin:
-            self.deblock_lidar = nn.Sequential(
-                nn.Conv3d(in_channels=128, out_channels=512, kernel_size=3, stride=2, padding=1),
-                nn.BatchNorm3d(num_features=512),
-                nn.ReLU(inplace=True),
-                nn.Conv3d(in_channels=512, out_channels=512, kernel_size=3, stride=2, padding=1),
-                nn.BatchNorm3d(num_features=512),
-                nn.ReLU(inplace=True),
-            )
-            self.pts_backbone.load_state_dict(torch.load('model_checkpoints/sst_epoch50_pretrain.pth'))
+        # if self.enable_sst_swin:
+        #     self.deblock_lidar = nn.Sequential(
+        #         nn.Conv3d(in_channels=128, out_channels=512, kernel_size=3, stride=2, padding=1),
+        #         nn.BatchNorm3d(num_features=512),
+        #         nn.ReLU(inplace=True),
+        #         nn.Conv3d(in_channels=512, out_channels=512, kernel_size=3, stride=2, padding=1),
+        #         nn.BatchNorm3d(num_features=512),
+        #         nn.ReLU(inplace=True),
+        #     )
+        #     self.pts_backbone.load_state_dict(torch.load('model_checkpoints/sst_epoch50_pretrain.pth'))
             # self.img_backbone.load_state_dict(torch.load('model_checkpoints/fixed_swin.pth'))
         self.use_grid_mask = use_grid_mask
         self.grid_mask = GridMask(True, True, rotate=1, offset=False, ratio=0.5, mode=1, prob=0.7)
@@ -80,7 +81,7 @@ class CmtDetector(MVXTwoStageDetector):
             voxels = voxel_dict['voxels']
             coors = voxel_dict['coors']
             """Extract features of points."""
-            if isinstance(self.pts_voxel_encoder, DynamicVFE_New):
+            if isinstance(self.pts_voxel_encoder, DynamicVFE_New) or isinstance(self.pts_voxel_encoder, DynamicVFE):
                 voxel_features, coors, low_level_point_feature, indices = self.pts_voxel_encoder(voxels, coors)
             else:
                 voxel_features = self.pts_voxel_encoder(voxels, voxel_dict['num_points'], coors)
@@ -89,9 +90,11 @@ class CmtDetector(MVXTwoStageDetector):
             x = self.pts_backbone(x)
             if self.with_pts_neck:
                 x = self.pts_neck(x)
-            if self.enable_sst_swin:
-                x = self.deblock_lidar(x)
-                x = [x[..., 0]]
+            # if self.enable_sst_swin:
+            #     # x = self.deblock_lidar(x)
+            #     x = [x[..., 0]]
+            if not isinstance(x, list):
+                x = [x]
             return x
 
 
@@ -251,7 +254,6 @@ class CmtDetector(MVXTwoStageDetector):
         img_feats, pts_feats = self.extract_feat(batch_inputs_dict,
                                                  batch_input_metas)
         
-
         outs = self.pts_bbox_head(pts_feats, img_feats, batch_input_metas)
 
         bbox_list = self.pts_bbox_head.get_bboxes(
