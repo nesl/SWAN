@@ -8,10 +8,11 @@ custom_imports = dict(
 # If point cloud range is modified, do remember to change all related
 # keys in the config.
 # voxel_size = [0.075, 0.075, 0.2]
-voxel_size = (0.15, 0.15, 4)
+voxel_size = (0.3, 0.3, 4)
 point_cloud_range = [-54.0, -54.0, -5.0, 54.0, 54.0, 3.0]
-grid_size = (720, 720, 2) 
-sparse_shape = (720,720,2) # FIXED: Must match grid_size for index alignment
+grid_size = (360, 360, 2) 
+sparse_shape = (360,360,2) 
+
 window_shape = (16, 16, 1)
 encoder_blocks = 8
 out_size_factor = 4
@@ -62,7 +63,6 @@ backend_args = None
 model = dict(
     type='LIDAR_PRETRAIN',
     
-    # 1. Data Preprocessor
     data_preprocessor=dict(
         type='Det3DDataPreprocessor',
         voxel=True,
@@ -74,25 +74,20 @@ model = dict(
             max_voxels=(-1, -1)
         ),
     ),
-
-    # 2. Voxel Encoder (DynamicVFE)
     pts_voxel_encoder=dict(
-        type='DynamicVFE', # Matches your provided TFLite config
+        type='DynamicVFE_New',
         in_channels=5,
         feat_channels=[64, 128],
         with_distance=False,
         voxel_size=voxel_size,
         with_cluster_center=True,
         with_voxel_center=True,
+        return_gt_points=True,
         point_cloud_range=point_cloud_range,
-        norm_cfg=dict(type='naiveSyncBN1d', eps=1e-3, momentum=0.01),
-        # Important: We need this to return point coords for MAE GT generation
-        # If standard DynamicVFE doesn't support this, use DynamicVFE_New from UniM2AE
-        return_gt_points=True 
+        norm_cfg=dict(type='naiveSyncBN1d', eps=1e-3, momentum=0.01)
     ),
 
-    # 3. Middle Encoder (Masking + Window Partitioning)
-    # Acts as the "Input Layer" for FlatFormer
+
     pts_middle_encoder=dict(
         type='SSTInputLayerV2Masked',
         window_shape=window_shape,
@@ -100,7 +95,7 @@ model = dict(
         voxel_size=voxel_size,
         shuffle_voxels=True,
         debug=True,
-        drop_info=None,
+        drop_info=drop_info,
         pos_temperature=10000,
         normalize_pos=False,
         mute=True,
@@ -113,8 +108,7 @@ model = dict(
         fake_voxels_ratio=0.1
     ),
 
-    # 4. Backbone (The FlatFormer Transformer)
-    # In pretraining, this sits in the 'backbone' slot
+    
     pts_backbone=dict(
         type='FlatFormer', 
         in_channels=128,
@@ -123,21 +117,17 @@ model = dict(
         activation="gelu",
         window_shape=window_shape,
         sparse_shape=sparse_shape,
-        output_shape=[720, 720], # Match Grid Size
+        output_shape=[360, 360], # Match Grid Size
         pos_temperature=10000,
         normalize_pos=False,
         group_size=144,
-        # Ensure FlatFormer supports receiving the 'voxel_info_encoder' dict
-        # and returning a dict (sparse tokens), NOT a dense map.
-        # If FlatFormer automatically scatters to dense, we might need to 
-        # modify it or add a flag like `return_sparse=True`.
+        return_sparse=True
+     
     ),
 
-    # 5. Neck (Decoder)
-    # Restores the masked tokens
     pts_neck=dict(
-        type='SSTv2Decoder', # Compatible with FlatFormer sparse tokens
-        d_model=[128] * 2,   # Match FlatFormer output channels/blocks
+        type='SSTv2Decoder', 
+        d_model=[128] * 2,  
         nhead=[8] * 2,
         num_blocks=2,
         dim_feedforward=[256] * 2,
@@ -154,13 +144,16 @@ model = dict(
         in_channels=128,
         feat_channels=128,
         num_chamfer_points=20,
+        chunk_size=3*360*360*2,
         pred_dims=3,
         only_masked=True,
         relative_error=False,
         loss_weights=loss_weights,
         use_chamfer=True,
         use_num_points=True,
-        use_fake_voxels=True
+        use_fake_voxels=True,
+        train_cfg=None,
+        test_cfg=None 
     )
 )
 
@@ -280,7 +273,7 @@ test_pipeline = [
 ]
 
 train_dataloader = dict(
-    batch_size=1,
+    batch_size=32,
     num_workers=16,
     persistent_workers=True,
     sampler=dict(type='DefaultSampler', shuffle=True),
@@ -351,7 +344,7 @@ optim_wrapper = dict(
 param_scheduler = [
     dict(
         type='OneCycleLR',
-        total_steps=20,            # Total epochs
+        total_steps=50,            # Total epochs
         by_epoch=True,             # It's an epoch-based scheduler
         eta_max=0.0001,            # Max LR
         pct_start=0.4,             # Matches step_ratio_up=0.4
@@ -361,7 +354,11 @@ param_scheduler = [
     )
 ]
 # runtime settings
-train_cfg = dict(by_epoch=True, max_epochs=20, val_interval=1)
+train_cfg = dict(
+    type='EpochBasedTrainLoop',
+    max_epochs=50,
+    val_interval=51
+)
 val_cfg = dict()
 test_cfg = dict()
 

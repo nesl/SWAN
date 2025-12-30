@@ -46,6 +46,7 @@ class ReconstructionHead(BaseModule):
                  use_chamfer=True,
                  use_num_points=True,
                  use_fake_voxels=True,
+                 chunk_size=3072,
                  init_cfg=None):
         super().__init__(init_cfg=init_cfg)
         self.in_channels = in_channels
@@ -65,6 +66,7 @@ class ReconstructionHead(BaseModule):
         self.use_chamfer = use_chamfer
         self.use_num_points = use_num_points
         self.use_fake_voxels = use_fake_voxels
+        self.chunk_size = 3072  # for chamfer loss memory optimization
         assert use_chamfer or use_num_points or use_fake_voxels, \
             "Need to use at least one of chamfer, num_points, and fake_voxels"
 
@@ -190,61 +192,44 @@ class ReconstructionHead(BaseModule):
         return loss
 
     @staticmethod
-    @staticmethod
-    def chamfer_distance_loss(src, trg, trg_padding, criterion_mode="l2", chunk_size=1024):
+    def chamfer_distance_loss(src, trg, trg_padding, criterion_mode="l2"):
         """
-        Optimized chamfer loss using cdist for memory efficiency.
-        - Uses cdist for pairwise distances (no coord expansion).
-        - Chunks over B (n_masked) to cap memory.
-        - Assumes l2 by default; supports l1. For smooth_l1, chunks the original expand logic.
 
         :param src: predicted point positions (B, N, C)
         :param trg: gt point positions (B, M, C)
         :param trg_padding: Which points are padded (B, M)
         :type trg_padding: torch.Tensor([torch.bool])
         :param criterion_mode: way of calculating distance, l1, l2, or smooth_l1
-        :param chunk_size: Batch chunks to process at once (tune based on GPU mem; 1024 ~ safe for 40GB)
         :return:
         """
-        B, N, C = src.shape
-        M = trg.shape[1]
-        device = src.device
+        if criterion_mode == 'smooth_l1':
+            criterion = smooth_l1_loss
+        elif criterion_mode == 'l1':
+            criterion = l1_loss
+        elif criterion_mode == 'l2':
+            criterion = mse_loss
+        else:
+            raise NotImplementedError
+        # src->(B,N,C) dst->(B,M,C)
+        src_expand = src.unsqueeze(2).repeat(1, 1, trg.shape[1], 1)  # (B,N M,C)
+        trg_expand = trg.unsqueeze(1).repeat(1, src.shape[1], 1, 1)  # (B,N M,C)
+        trg_padding_expand = trg_padding.unsqueeze(1).repeat(1, src.shape[1], 1)  # (B,N M)
 
-        loss_src_total = 0.0
-        loss_trg_total = 0.0
+        distance = criterion(src_expand, trg_expand, reduction='none').sum(-1)  # (B,N M)
+        distance[trg_padding_expand] = np.inf
 
-        for start in range(0, B, chunk_size):
-            end = min(start + chunk_size, B)
-            chunk_b = end - start
-            src_chunk = src[start:end]
-            trg_chunk = trg[start:end]
-            trg_padding_chunk = trg_padding[start:end]
+        src2trg_distance, indices1 = torch.min(distance, dim=2)  # (B,N)
+        trg2src_distance, indices2 = torch.min(distance, dim=1)  # (B,M)
+        trg2src_distance[trg_padding] = 0
 
-            if criterion_mode in ['l2', 'l1']:
-                p = 2 if criterion_mode == 'l2' else 1
-                dist = torch.cdist(src_chunk, trg_chunk, p=p)  # (b, N, M)
-                if p == 2:
-                    dist = dist ** 2  # For l2, cdist gives sqrt(sum sq), but we need sum sq for mse equiv
-            elif criterion_mode == 'smooth_l1':
-                # Fallback to chunked expand for smooth_l1 (per-element)
-                src_expand = src_chunk.unsqueeze(2).repeat(1, 1, M, 1)  # (b, N, M, C)
-                trg_expand = trg_chunk.unsqueeze(1).repeat(1, N, 1, 1)  # (b, N, M, C)
-                dist = smooth_l1_loss(src_expand, trg_expand, reduction='none').sum(-1)  # (b, N, M)
-            else:
-                raise NotImplementedError
+        loss_src = torch.mean(src2trg_distance)
+        # Since there is different number of points in each voxel we want to have each voxel matter equally much
+        # and to not have voxels with more points be more important to mimic
+        num_valid_points = (~trg_padding).sum(1)
+        loss_trg = trg2src_distance.sum(1) / (num_valid_points + 1e-6)  # B
+        loss_trg = loss_trg.mean()
 
-            dist[trg_padding_chunk.unsqueeze(1).expand(-1, N, -1)] = float('inf')
-
-            src2trg_distance = torch.min(dist, dim=2)[0]  # (b, N)
-            trg2src_distance = torch.min(dist, dim=1)[0]  # (b, M)
-            trg2src_distance[trg_padding_chunk] = 0
-
-            loss_src_total += src2trg_distance.sum()
-            loss_trg_total += (trg2src_distance.sum(1) / (~trg_padding_chunk).sum(1).clamp(min=1)).sum()
-
-        loss_src = loss_src_total / (B * N)
-        loss_trg = loss_trg_total / B
-
+        
         return loss_src, loss_trg
 
     def loss(self,

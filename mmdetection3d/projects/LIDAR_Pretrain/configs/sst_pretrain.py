@@ -8,10 +8,10 @@ custom_imports = dict(
 # If point cloud range is modified, do remember to change all related
 # keys in the config.
 # voxel_size = [0.075, 0.075, 0.2]
-voxel_size = (0.15, 0.15, 4)
+voxel_size = (0.3, 0.3, 4)
 point_cloud_range = [-54.0, -54.0, -5.0, 54.0, 54.0, 3.0]
-grid_size = (720, 720, 2) 
-sparse_shape = (720,720,2) # FIXED: Must match grid_size for index alignment
+grid_size = (360, 360, 2) 
+sparse_shape = (360,360,2) 
 window_shape = (16, 16, 1)
 encoder_blocks = 8
 out_size_factor = 4

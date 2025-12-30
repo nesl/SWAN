@@ -183,14 +183,7 @@ class SwinTransformerBlock(nn.Module):
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
 
     def forward(self, x, attn_mask, rel_pos_idx):
-        shortcut = x
-        x = self.norm1(x)
-
-        # W-MSA/SW-MSA
-        x = self.attn(x, mask=attn_mask, pos_idx=rel_pos_idx)  # B*nW, N_vis, C
-
-        # FFN
-        x = shortcut + self.drop_path(x)
+        x = x + self.drop_path(self.attn(self.norm1(x), mask=attn_mask, pos_idx=rel_pos_idx))
         x = x + self.drop_path(self.mlp(self.norm2(x)))
 
         return x
@@ -775,9 +768,11 @@ class SwinTransformer(nn.Module):
         x_vis = x[vis_mask.expand(B, -1)].reshape(B, -1, C)
         coords = coords[vis_mask].reshape(1, -1, 2) # 1 N_vis 2
 
-        if keep_layer_mask:
+        if keep_layer_mask is not None:
             # We run torch.split to group it according to the depth blocks. 
             keep_layer_mask = torch.split(keep_layer_mask, self.depths)
+        else:
+            keep_layer_mask = [None] * self.num_layers
         # transformer forward
         for i, layer in enumerate(self.layers):
             # Each block gets the correct drop/no drop.
@@ -801,84 +796,110 @@ class SwinTransformer(nn.Module):
 
 @MODELS.register_module()
 class MAESwinEncoder(nn.Module):
-    def __init__(self, img_size=224, patch_size=4, in_chans=3,
-                 embed_dim=96, depths=[2, 2, 6, 2], num_heads=[3, 6, 12, 24],
-                 window_size=7, backbone_cls=SwinTransformer, mask_ratio=0.75, **kwargs):
+    """Swin Transformer Encoder for Masked Autoencoders.
+    
+    This encoder supports both standard masked encoding and a "dual-pass" 
+    mode where it extracts features from both a masked and unmasked version 
+    of the image, ensuring the feature tokens are perfectly aligned.
+    """
+    def __init__(self, 
+                 img_size=224, 
+                 patch_size=4, 
+                 in_chans=3,
+                 embed_dim=96, 
+                 depths=[2, 2, 6, 2], 
+                 num_heads=[3, 6, 12, 24],
+                 window_size=7, 
+                 backbone_cls=SwinTransformer, 
+                 mask_ratio=0.75, 
+                 **kwargs):
         super().__init__()
-        norm_layer = partial(nn.LayerNorm, eps=1e-6)
-        self.mask_ratio = mask_ratio
-        self.encoder = backbone_cls(img_size=img_size, patch_size=patch_size, in_chans=in_chans,
-                                    num_classes=0, embed_dim=embed_dim, depths=depths, 
-                                    num_heads=num_heads,window_size=window_size, norm_layer=norm_layer, 
-                                    mask_ratio=mask_ratio, **kwargs)
-        num_patches = np.prod(self.encoder.layers[-1].input_resolution)
-        self.num_patches = num_patches
-        self.initialize_weights()
         
+        self.mask_ratio = mask_ratio
+        
+        # Initialize the Swin Backbone
+        # Note: The backbone must support a 'mask' argument in its forward pass
+        self.encoder = backbone_cls(
+            img_size=img_size, 
+            patch_size=patch_size, 
+            in_chans=in_chans,
+            num_classes=0, 
+            embed_dim=embed_dim, 
+            depths=depths, 
+            num_heads=num_heads,
+            window_size=window_size, 
+            norm_layer=partial(nn.LayerNorm, eps=1e-6), 
+            mask_ratio=mask_ratio, 
+            **kwargs
+        )
+
+        # Calculate total patches at the encoder's output resolution (e.g., 7x7=49)
+        self.num_patches = np.prod(self.encoder.layers[-1].input_resolution)
+        
+        self.initialize_weights()
+
     def initialize_weights(self):
-        # initialization
-        # initialize patch_embed like nn.Linear (instead of nn.Conv2d)
+        # Specific initialization for the patch embedding projection
         w = self.encoder.patch_embed.proj.weight.data
         torch.nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
 
-        # initialize nn.Linear and nn.LayerNorm
+        # Apply general weight init to all submodules
         self.apply(self._init_weights)
-        
+
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
-            # we use xavier_uniform following official JAX ViT:
             torch.nn.init.xavier_uniform_(m.weight)
-            if isinstance(m, nn.Linear) and m.bias is not None:
+            if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
         elif isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
-    
+
     def random_masking(self, x, mask_ratio):
-        """
-        Perform per-sample random masking by per-sample shuffling.
-        Per-sample shuffling is done by argsort random noise.
-        x: [N, L, D], sequence
-        """
-        N, L = 1, self.num_patches  # batch, length, dim
+        """Keeping your original function structure with N, L fix."""
+        N, L = x.shape[0], self.num_patches
         len_keep = int(L * (1 - mask_ratio))
-        
-        noise = torch.rand(N, L, device=x.device)  # noise in [0, 1]
-        
-        # sort noise for each sample
-        ids_shuffle = torch.argsort(noise, dim=1)  # ascend: small is keep, large is remove
-        ids_restore = torch.argsort(ids_shuffle, dim=1)
 
-        # keep the first subset
-        ids_keep = ids_shuffle[:, :len_keep]
+        # Fix: Use (N, L) noise for batch diversity
+        noise = torch.rand(N, L, device=x.device) 
+        ids_shuffle = torch.argsort(noise, dim=1) # [N, L]
+        ids_restore = torch.argsort(ids_shuffle, dim=1) # [N, L]
 
-        # generate the binary mask: 0 is keep, 1 is remove
-        mask = torch.ones([N, L], device=x.device)
-        # Should be equivalent to mask.scatter_(1, ids_keep, 0)
-        mask.scatter_add_(1, ids_keep, torch.full([N, len_keep], fill_value=-1, dtype=mask.dtype, device=x.device))
-        assert (mask.gather(1, ids_shuffle).gather(1, ids_restore) == mask).all()
+        mask = torch.ones(N, L, device=x.device)
+        mask[:, :len_keep] = 0
+        mask = torch.gather(mask, dim=1, index=ids_restore)
 
-        # repeat the mask
-        ids_restore = ids_restore.repeat(x.shape[0], 1)
-        mask = mask.repeat(x.shape[0], 1)
+        return mask, ids_restore, ids_shuffle
 
-        return mask, ids_restore, ids_shuffle.repeat(x.shape[0], 1)
-    
     def forward(self, x, camera_only=False):
-        # generate random mask
+        # Generate the main mask
         mask, ids_restore, ids_shuffle = self.random_masking(x, self.mask_ratio)
+
         if not camera_only:
+            # Generate a 'no-mask' (ratio 0) setup for full image features
             mask_full, ids_restore_full, _ = self.random_masking(x, 0)
 
-            # L -> L_vis
+            # 1. Get full features (L tokens)
             latent_full = self.encoder(x, mask_full.bool())
-        
-            latent_full_unshuffle = torch.gather(latent_full, dim=1, index=ids_restore_full.unsqueeze(-1).repeat(1, 1, latent_full.shape[2]))
-            latent_full_shuffle = torch.gather(latent_full_unshuffle, dim=1, index=ids_shuffle.unsqueeze(-1).repeat(1, 1, latent_full.shape[2]))
-            latent = latent_full_shuffle[:, :int(ids_restore.shape[1]*(1-self.mask_ratio)), :]
+            D = latent_full.shape[-1]
+            
+            # 2. Align features: Put full latent tokens in spatial order, 
+            # then re-shuffle them using the main mask's shuffle indices.
+            # This ensures the first 'len_keep' tokens match the visible patches.
+            idx_full = ids_restore_full.unsqueeze(-1).expand(-1, -1, D)
+            latent_spatial = torch.gather(latent_full, dim=1, index=idx_full)
+            
+            idx_shuffle = ids_shuffle.unsqueeze(-1).expand(-1, -1, D)
+            latent_shuffled = torch.gather(latent_spatial, dim=1, index=idx_shuffle)
+
+            # 3. Slice the visible subset
+            len_keep = int(self.num_patches * (1 - self.mask_ratio))
+            latent = latent_shuffled[:, :len_keep, :]
 
             return latent, latent_full, mask, ids_restore, ids_restore_full
+        
         else:
+            # Standard single-pass encoding
             latent = self.encoder(x, mask.bool())
             return latent, mask, ids_restore
 
@@ -938,6 +959,7 @@ def get_2d_sincos_pos_embed(embed_dim, grid_size, cls_token=False):
         pos_embed = np.concatenate([np.zeros([1, embed_dim]), pos_embed], axis=0)
     return pos_embed
 
+
 @MODELS.register_module()
 class MAESwinDecoder(nn.Module):
     def __init__(self, num_patches, patch_size=4, in_chans=3,
@@ -947,59 +969,51 @@ class MAESwinDecoder(nn.Module):
         super().__init__()
         
         norm_layer = partial(nn.LayerNorm, eps=1e-6)
-        self.num_patches = num_patches
-        embed_dim = embed_dim * 2**(len(depths) - 1)
-        patch_size = patch_size * 2**(len(depths) - 1)
-        self.final_patch_size = patch_size
-        self.decoder_embed = nn.Identity() if embed_dim == decoder_embed_dim else nn.Linear(embed_dim, decoder_embed_dim, bias=True)
-
+        # num_patches should be (H, W) tuple
+        self.grid_size = num_patches 
+        L = self.grid_size[0] * self.grid_size[1]
+        
+        enc_dim = embed_dim * 2**(len(depths) - 1)
+        self.final_patch_size = patch_size * 2**(len(depths) - 1)
+        
+        self.decoder_embed = nn.Linear(enc_dim, decoder_embed_dim, bias=True)
         self.mask_token = nn.Parameter(torch.zeros(1, 1, decoder_embed_dim))
-
-        self.decoder_pos_embed = nn.Parameter(torch.zeros(1, num_patches[0] * num_patches[1], decoder_embed_dim), requires_grad=False)  # fixed sin-cos embedding
+        
+        # Consistent Pos Embed shape [1, L, D]
+        self.decoder_pos_embed = nn.Parameter(torch.zeros(1, L, decoder_embed_dim), requires_grad=False)
 
         self.decoder_blocks = nn.ModuleList([
             block_cls(decoder_embed_dim, decoder_num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer)
-            for i in range(decoder_depth)])
+            for _ in range(decoder_depth)])
 
         self.decoder_norm = norm_layer(decoder_embed_dim)
-        self.decoder_pred = nn.Linear(decoder_embed_dim, patch_size**2 * in_chans, bias=True) # encoder to decoder
+        self.decoder_pred = nn.Linear(decoder_embed_dim, self.final_patch_size**2 * in_chans, bias=True)
 
         self.cross_modality_module = None 
         if decoder is not None:
             self.cross_modality_module = build_transformer_layer_sequence(decoder)
             self.level_start_index = nn.Parameter(torch.as_tensor((0), dtype=torch.long), requires_grad=False)
             self.valid_ratios = nn.Parameter(torch.tensor([[[1., 1.]]], dtype=torch.float), requires_grad=False)
-            self.decoder_pos_embed = nn.Parameter(torch.randn(num_patches[0] * num_patches[1], 1, decoder_embed_dim))
+            self.decoder_pos_embed = nn.Parameter(torch.randn(1, L, decoder_embed_dim))
             self.reference_camera = nn.Linear(decoder_embed_dim, 2)
             self.lidar2token = nn.Conv2d(128, decoder_embed_dim, kernel_size=1)
-        # --------------------------------------------------------------------------
 
         self.norm_pix_loss = norm_pix_loss
-
         self.initialize_weights()
         
     def initialize_weights(self):
-        # initialization
-        # initialize (and freeze) pos_embed by sin-cos embedding
         if self.cross_modality_module is None:
-            decoder_pos_embed = get_2d_sincos_pos_embed(self.decoder_pos_embed.shape[-1], self.num_patches, cls_token=False)
-            self.decoder_pos_embed.data.copy_(torch.from_numpy(decoder_pos_embed).float().unsqueeze(0))
-
-        # timm's trunc_normal_(std=.02) is effectively normal_(std=0.02) as cutoff is too big (2.)
+            pos_embed = get_2d_sincos_pos_embed(self.decoder_pos_embed.shape[-1], self.grid_size)
+            self.decoder_pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
         torch.nn.init.normal_(self.mask_token, std=.02)
-
-        # initialize nn.Linear and nn.LayerNorm
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
-            # we use xavier_uniform following official JAX ViT:
             torch.nn.init.xavier_uniform_(m.weight)
-            if isinstance(m, nn.Linear) and m.bias is not None:
-                nn.init.constant_(m.bias, 0)
+            if m.bias is not None: nn.init.constant_(m.bias, 0)
         elif isinstance(m, nn.LayerNorm):
-            nn.init.constant_(m.bias, 0)
-            nn.init.constant_(m.weight, 1.0)
+            nn.init.constant_(m.bias, 0); nn.init.constant_(m.weight, 1.0)
             
     def patchify(self, imgs, patch_size=None):
         """
@@ -1022,8 +1036,8 @@ class MAESwinDecoder(nn.Module):
         imgs: (N, 3, H, W)
         """
         p = patch_size or self.final_patch_size
-        h = self.num_patches[0]
-        w = self.num_patches[1]
+        h = self.grid_size[0]
+        w = self.grid_size[1]
         assert h * w == x.shape[1]
         
         x = x.reshape(shape=(x.shape[0], h, w, p, p, 3))
@@ -1032,49 +1046,44 @@ class MAESwinDecoder(nn.Module):
         return imgs
         
     def forward(self, x, ids_restore, lidar_x=None):
-        # embed tokens
         x = self.decoder_embed(x)
 
-        # append mask tokens to sequence
-        mask_tokens = self.mask_token.repeat(x.shape[0], ids_restore.shape[1] - x.shape[1], 1)
+        # Memory efficient unshuffle
+        mask_tokens = self.mask_token.expand(x.shape[0], ids_restore.shape[1] - x.shape[1], -1)
         x_ = torch.cat([x, mask_tokens], dim=1)
-        x_ = torch.gather(x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, x.shape[2]))  # unshuffle
+        x_ = torch.gather(x_, dim=1, index=ids_restore.unsqueeze(-1).expand(-1, -1, x.shape[2]))
 
         if lidar_x is not None:
+            B_cam = x_.shape[0]
             _, _, H, W = lidar_x.shape
-            lidar_x = self.lidar2token(lidar_x).flatten(-2)
-            lidar_x = torch.cat([i.repeat(6, 1, 1) for i in lidar_x])
-            lidar_x = lidar_x.permute(0, 2, 1)
+            lidar_f = self.lidar2token(lidar_x).flatten(-2) # [B_lidar, D, L_lidar]
+            
+            # Efficient Interleave for multi-cam (e.g. 6 cams per LiDAR)
+            num_cams = B_cam // lidar_x.shape[0]
+            lidar_f = lidar_f.repeat_interleave(num_cams, dim=0).permute(0, 2, 1)
 
-            spatial_shapes = torch.as_tensor([(H, W)], dtype=torch.long, device=lidar_x.device)
-            valid_ratios = self.valid_ratios.repeat(x.shape[0], 1, 1)
+            spatial_shapes = torch.as_tensor([(H, W)], dtype=torch.long, device=x.device)
+            valid_ratios = self.valid_ratios.expand(B_cam, -1, -1)
+            ref_pts = self.reference_camera(x_).sigmoid()
 
-            reference_point = self.reference_camera(x_).sigmoid()
-
-            x_c, _ = self.cross_modality_module(query=x_.permute(1, 0, 2), 
-                                                key=None, 
-                                                value=lidar_x.permute(1, 0, 2), 
-                                                query_pos=self.decoder_pos_embed,
-                                                key_padding_mask=None,
-                                                reference_points=reference_point,
-                                                spatial_shapes=spatial_shapes,
-                                                level_start_index=self.level_start_index,
-                                                valid_ratios=valid_ratios,
-                                                reg_branches=None)
+            # Cross-modality: Query=Camera, Value=LiDAR
+            x_c, _ = self.cross_modality_module(
+                query=x_.permute(1, 0, 2), 
+                key=None, 
+                value=lidar_f.permute(1, 0, 2), 
+                query_pos=self.decoder_pos_embed.permute(1, 0, 2),
+                reference_points=ref_pts,
+                spatial_shapes=spatial_shapes,
+                level_start_index=self.level_start_index,
+                valid_ratios=valid_ratios
+            )
             x = x_c.permute(1, 0, 2)
         else:
-            # add pos embed
-            x = x_ + self.decoder_pos_embed
+            x = x_ + self.decoder_pos_embed # Correct Broadcasting [B, L, D] + [1, L, D]
 
-        # apply Transformer blocks
-        for blk in self.decoder_blocks:
-            x = blk(x)
+        for blk in self.decoder_blocks: x = blk(x)
         x = self.decoder_norm(x)
-
-        # predictor projection
-        x = self.decoder_pred(x)
-        
-        return x
+        return self.decoder_pred(x)
     
     def forward_loss(self, imgs, pred, mask):
         """
@@ -1090,8 +1099,8 @@ class MAESwinDecoder(nn.Module):
 
         loss = (pred - target) ** 2
         loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
-
-        loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
+        assert mask.sum() > 0
+        loss = (loss * mask).sum() / (mask.sum() + 1e-6)  # mean loss on removed patches
         return loss
 
 if __name__ == '__main__':

@@ -1,5 +1,5 @@
-from .lidar_pretrain import LIDAR_PRETRAIN
-from .ae_head import LIDARReconstructionHead 
+from .lidar_pretrain import LIDAR_PRETRAIN 
+
 __all__ = [
-    'LIDAR_PRETRAIN', 'LIDARReconstructionHead'
+    'LIDAR_PRETRAIN', 
 ]

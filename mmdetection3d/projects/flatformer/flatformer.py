@@ -4,11 +4,13 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
-from flash_attn.flash_attn_interface import flash_attn_unpadded_qkvpacked_func
-from mmcv.runner import auto_fp16
+from flash_attn.flash_attn_interface import flash_attn_varlen_qkvpacked_func
+
 from torch.nn import functional as F
 
 from mmdet3d.registry import MODELS
+
+__all__ = ["FlatFormer"]
 
 
 def _create_cu_seqlens(batch_size: int, num_tokens: int, device: torch.device) -> torch.Tensor:
@@ -25,27 +27,41 @@ class FlashAttention(nn.MultiheadAttention):
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         assert self._qkv_same_embed_dim
 
+        # q is already cast to bf16/fp16 by BasicLayer
+        target_dtype = q.dtype 
+        
         batch_size, num_tokens, embed_dim = q.shape
         head_dim = embed_dim // self.num_heads
 
         x = torch.stack([q, k, v])
         x = x.view(3, -1, x.shape[-1])
-        x = torch.baddbmm(self.ib(), x, self.iw())
+        
+        # Cast weights/bias to match input dtype before baddbmm
+        weights = self.iw().to(target_dtype)
+        bias = self.ib().to(target_dtype)
+        
+        x = torch.baddbmm(bias, x, weights)
+
+        
         qkv = x.view(3, -1, self.num_heads, head_dim).transpose(0, 1)
 
         cu_seqlens = _create_cu_seqlens(batch_size, num_tokens, qkv.device)
-        x = flash_attn_unpadded_qkvpacked_func(qkv, cu_seqlens, num_tokens, 0)
+        x = flash_attn_varlen_qkvpacked_func(qkv, cu_seqlens, num_tokens, 0.0)
         x = x.view(batch_size, num_tokens, -1)
 
-        x = F.linear(x, self.out_proj.weight, self.out_proj.bias)
+        # Output projection also needs casting if not auto-handled
+        out_weight = self.out_proj.weight.to(target_dtype)
+        out_bias = self.out_proj.bias.to(target_dtype)
+        
+        x = F.linear(x, out_weight, out_bias)
         return x, None
-
+        
     def iw(self) -> torch.Tensor:
         tensor = self.in_proj_weight
         tensor = tensor.view(3, -1, tensor.shape[-1])
         tensor = tensor.transpose(1, 2).contiguous()
         return tensor
-
+    
     def ib(self) -> torch.Tensor:
         tensor = self.in_proj_bias
         tensor = tensor.view(3, 1, -1)
@@ -62,6 +78,12 @@ class GroupAttention(nn.Module):
         size = x.shape[0]
         num_groups = int(math.ceil(size / self.group_size))
 
+        # Pad if necessary to match group size
+        pad_len = num_groups * self.group_size - size
+        if pad_len > 0:
+            x = F.pad(x, (0, 0, 0, pad_len))
+            pe = F.pad(pe, (0, 0, 0, pad_len))
+
         x = x.view(num_groups, self.group_size, -1)
         pe = pe.view(num_groups, self.group_size, -1)
 
@@ -70,6 +92,10 @@ class GroupAttention(nn.Module):
         x, _ = self.attn(q, k, v)
 
         x = x.view(num_groups * self.group_size, -1)
+        
+        # Remove padding
+        if pad_len > 0:
+            x = x[:size]
 
         return x
 
@@ -87,11 +113,31 @@ class BasicLayer(nn.Module):
 
         self.act = _get_activation_fn(activation)
 
-        self.fp16_enabled = False
-
-    @auto_fp16(apply_to=("src", "pe"))
     def forward(self, src, pe):
-        src = self.norm1(src + self.attn(src, pe))
+        # cast to low precision for Attention part
+        original_dtype = src.dtype
+        
+        if original_dtype == torch.float32:
+            # Determine target low-precision dtype
+            if torch.cuda.is_bf16_supported():
+                target_dtype = torch.bfloat16
+            else:
+                target_dtype = torch.float16
+            
+            # Cast inputs for Attention
+            src_low = src.to(target_dtype)
+            pe_low = pe.to(target_dtype)
+            
+            # Run Attention
+            attn_out = self.attn(src_low, pe_low)
+            
+            # Cast back to original dtype for residual connection and FFN
+            src = self.norm1(src + attn_out.to(original_dtype))
+        else:
+            # Input is already low precision (likely via AmpOptimWrapper)
+            src = self.norm1(src + self.attn(src, pe))
+
+        # FFN part
         src = self.norm2(src + self.fc2(self.act(self.fc1(src))))
 
         return src
@@ -119,9 +165,14 @@ class BasicBlock(nn.Module):
     def forward(self, x: torch.Tensor, pe: torch.Tensor, mappings: Dict[str, Any]) -> torch.Tensor:
         for k, name in enumerate(["x", "x_shift", "y", "y_shift"]):
             indices = mappings[name]
-            x[indices] = self.block[k](x[indices][mappings["flat2win"]], pe[indices][mappings["flat2win"]])[
-                mappings["win2flat"]
-            ]
+            x_mapped = x[indices][mappings["flat2win"]]
+            pe_mapped = pe[indices][mappings["flat2win"]]
+            
+            # Run block
+            out = self.block[k](x_mapped, pe_mapped)
+            
+            # Scatter back
+            x[indices] = out[mappings["win2flat"]]
 
         return x
 
@@ -140,8 +191,8 @@ def get_window_coors_shift(coords, sparse_shape, window_shape, shifted):
     n, m, _ = sparse_shape
     n2, m2, _ = window_shape
 
-    n1 = int(np.ceil(n / n2) + 1)  # plus one here to meet the needs of shift.
-    m1 = int(np.ceil(m / m2) + 1)  # plus one here to meet the needs of shift.
+    n1 = int(np.ceil(n / n2) + 1)  
+    m1 = int(np.ceil(m / m2) + 1)  
 
     if shifted:
         shift_x, shift_y = (n2 // 2, m2 // 2)
@@ -173,8 +224,12 @@ class FlattenedWindowMapping(nn.Module):
 
     def forward(self, coords: torch.Tensor, batch_size: int) -> Dict[str, torch.Tensor]:
         coords = coords.long()
+        device = coords.device
 
-        _, num_per_batch = torch.unique(coords[:, 0], sorted=False, return_counts=True)
+        num_per_batch = torch.zeros(batch_size, device=device, dtype=torch.long)
+        unique_batches, counts = torch.unique(coords[:, 0], sorted=True, return_counts=True)
+        num_per_batch[unique_batches] = counts
+
         batch_start_indices = F.pad(torch.cumsum(num_per_batch, dim=0), (1, 0))
         num_per_batch_p = (
             torch.div(
@@ -185,13 +240,13 @@ class FlattenedWindowMapping(nn.Module):
             * self.group_size
         )
         batch_start_indices_p = F.pad(torch.cumsum(num_per_batch_p, dim=0), (1, 0))
-        flat2win = torch.arange(batch_start_indices_p[-1]).to(coords.device)
-        win2flat = torch.arange(batch_start_indices[-1]).to(coords.device)
+        flat2win = torch.arange(batch_start_indices_p[-1]).to(device)
+        win2flat = torch.arange(batch_start_indices[-1]).to(device)
         for i in range(batch_size):
             win2flat[batch_start_indices[i] : batch_start_indices[i + 1]] += (
                 batch_start_indices_p[i] - batch_start_indices[i]
             )
-            if num_per_batch[i] != num_per_batch_p[i]:
+            if num_per_batch[i] > 0 and num_per_batch[i] != num_per_batch_p[i]:
                 flat2win[
                     batch_start_indices_p[i + 1]
                     - self.group_size
@@ -218,10 +273,11 @@ class FlattenedWindowMapping(nn.Module):
                 x2,
                 y2,
             ) = get_window_coors_shift(coords, self.sparse_shape, self.window_shape, shifted=shifted)
+            # Use large multipliers to ensure unique sorting keys
             vx = (n1 * y1 + (-1) ** y1 * x1) * n2 * m2 + (-1) ** y1 * (m2 * x2 + (-1) ** x2 * y2)
-            vx += coords[:, 0] * self.sparse_shape[0] * self.sparse_shape[1] * 10
+            vx += coords[:, 0] * self.sparse_shape[0] * self.sparse_shape[1] * 100 # Increased multiplier safety
             vy = (m1 * x1 + (-1) ** x1 * y1) * m2 * n2 + (-1) ** x1 * (n2 * y2 + (-1) ** y2 * x2)
-            vy += coords[:, 0] * self.sparse_shape[0] * self.sparse_shape[1] * 10
+            vy += coords[:, 0] * self.sparse_shape[0] * self.sparse_shape[1] * 100
             _, mappings["x" + ("_shift" if shifted else "")] = torch.sort(vx)
             _, mappings["y" + ("_shift" if shifted else "")] = torch.sort(vy)
 
@@ -251,11 +307,11 @@ class PositionalEmbedding(nn.Module):
             x = x / size_x * 2 * 3.1415  # [-pi, pi]
             y = y / size_y * 2 * 3.1415  # [-pi, pi]
 
-        inv_freq = self.inv_freq
+        inv_freq = self.inv_freq(coors.device)
 
         # [num_tokens, pos_length]
-        pex = x[:, None] / inv_freq()[None, :]
-        pey = y[:, None] / inv_freq()[None, :]
+        pex = x[:, None] / inv_freq[None, :]
+        pey = y[:, None] / inv_freq[None, :]
 
         # [num_tokens, pos_length]
         pex = torch.stack([pex[:, ::2].sin(), pex[:, 1::2].cos()], dim=-1).flatten(1)
@@ -269,12 +325,12 @@ class PositionalEmbedding(nn.Module):
 
         return pe
 
-    def inv_freq(self):
+    def inv_freq(self, device):
         ndim = 2
         pos_length = (self.feat_dim // (ndim * 2)) * 2
 
         # [pos_length]
-        inv_freq = torch.arange(pos_length, dtype=torch.float32, device="cuda")
+        inv_freq = torch.arange(pos_length, dtype=torch.float32, device=device)
         inv_freq = self.pos_temperature ** (2 * (inv_freq // 2) / pos_length)
         return inv_freq
 
@@ -293,9 +349,12 @@ class FlatFormer(nn.Module):
         pos_temperature=10000,
         normalize_pos=False,
         group_size=69,
+        return_sparse=False,
+        **kwargs
     ) -> None:
         super().__init__()
         self.group_size = group_size
+        self.return_sparse = return_sparse
 
         self.embedding = PositionalEmbedding(in_channels, sparse_shape, normalize_pos, pos_temperature)
         self.mapping = FlattenedWindowMapping(
@@ -312,17 +371,39 @@ class FlatFormer(nn.Module):
 
         self.output_shape = output_shape
 
-    @auto_fp16(apply_to=('x',))
-    def forward(self, x, coords, batch_size):
-        pe = self.embedding(coords, x.dtype)
+    def forward(self, x, coords=None, batch_size=None):
+        # 1. Interface Adapter for SST/Pretrain (Dict Input)
+        is_dict_input = False
+        if isinstance(x, dict):
+            is_dict_input = True
+            voxel_info = x
+            feats = voxel_info['voxel_feats']
+            coords = voxel_info['voxel_coors']
+            if batch_size is None:
+                batch_size = int(coords[:, 0].max().item()) + 1
+        else:
+            feats = x
+
+        # 2. Main Logic
+        pe = self.embedding(coords, feats.dtype)
         mappings = self.mapping(coords, batch_size)
 
         for _, block in enumerate(self.block_list):
-            x = block(x, pe, mappings)
+            feats = block(feats, pe, mappings)
 
-        x = self.recover_bev(x, coords, batch_size)
+        # 3. Output Logic
+        if self.return_sparse:
+            # For Pretraining: Return sparse tokens or update the dict
+            if is_dict_input:
+                voxel_info['output'] = feats
+                # Update voxel_feats too for downstream decoders
+                voxel_info['voxel_feats'] = feats 
+                return voxel_info
+            return feats, coords
 
-        return x
+        # For Standard Detection: Scatter to dense BEV
+        x_dense = self.recover_bev(feats, coords, batch_size)
+        return x_dense
 
     def _reset_parameters(self):
         for _, p in self.named_parameters():
@@ -337,15 +418,23 @@ class FlatFormer(nn.Module):
         for batch_itt in range(batch_size):
             # Create the canvas for this sample
             canvas = torch.zeros(feat_dim, nx * ny, dtype=voxel_feat.dtype, device=voxel_feat.device)
-
+            this_coors = coors[batch_mask, :]
             # Only include non-empty pillars
             batch_mask = coors[:, 0] == batch_itt
-            this_coors = coors[batch_mask, :]
-            indices = this_coors[:, 2] * nx + this_coors[:, 3]
+            if this_coors.shape[0] == 0:
+                batch_canvas.append(canvas)
+                continue
+            
+            valid_mask = (this_coors[:, 2] >= 0) & (this_coors[:, 2] < ny) & \
+                         (this_coors[:, 3] >= 0) & (this_coors[:, 3] < nx)
+            
+            safe_coors = this_coors[valid_mask]
+            voxels = voxel_feat[batch_mask, :][valid_mask]
+
+            indices = safe_coors[:, 2] * nx + safe_coors[:, 3]
             indices = indices.type(torch.long)
-            voxels = voxel_feat[batch_mask, :]  # [n, c]
-            voxels = voxels.t()  # [c, n]
-            canvas[:, indices] = voxels
+            
+            canvas[:, indices] = voxels.t()
             batch_canvas.append(canvas)
 
         batch_canvas = torch.stack(batch_canvas, 0)
