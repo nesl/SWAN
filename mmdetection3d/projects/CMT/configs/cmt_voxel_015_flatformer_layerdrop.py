@@ -1,3 +1,8 @@
+'''
+Refer to cmt_voxel_015_flatformer.py
+'''
+
+
 _base_ = ['../../../configs/_base_/default_runtime.py']
 custom_imports = dict(
     imports=['projects.BEVFusion.bevfusion', 'projects.UniM2AE', 'projects.CMT'], allow_failed_imports=False)

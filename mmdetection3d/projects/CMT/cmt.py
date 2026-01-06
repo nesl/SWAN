@@ -20,6 +20,10 @@ from .cmt_utils.grid_mask import GridMask
 from mmdet3d.registry import MODELS
 import torch.nn as nn
 
+'''
+Top level CMT model
+
+'''
 
 @MODELS.register_module()
 class CmtDetector(MVXTwoStageDetector):
@@ -32,6 +36,7 @@ class CmtDetector(MVXTwoStageDetector):
         super(CmtDetector, self).__init__(**kwargs)
         self.enable_modal_mask = enable_modal_mask
         self.use_grid_mask = use_grid_mask
+        # GridMask will mask the input image to reduce overfitting to the images
         self.grid_mask = GridMask(True, True, rotate=1, offset=False, ratio=0.5, mode=1, prob=0.7)
         self.layerdrop_rate = layerdrop_rate
         
@@ -47,24 +52,31 @@ class CmtDetector(MVXTwoStageDetector):
             for img_meta in img_metas:
                 img_meta.update(input_shape=input_shape)
 
-            if img.dim() == 5 and img.size(0) == 1:
+            if img.dim() == 5 and img.size(0) == 1: # Batch size 1 we squeeze and remove the batch dimension since img backbone handles 4 dimensional input
                 img.squeeze_(0)
+            # Compress the batch dimension and the N dimension (6 cameras per sample)
             elif img.dim() == 5 and img.size(0) > 1:
                 B, N, C, H, W = img.size()
                 img = img.view(B * N, C, H, W)
             if self.use_grid_mask:
                 img = self.grid_mask(img)
-
+            
+            # LAYERDROPPING LOGIC: Generate random mask during training according to the layerdrop rate
+            # 0 indicates a layer is DROPPED, 1 means the layer is RETAINED
             if self.training:
                 retained_layers = (torch.rand(self.img_backbone.total_depth) > self.layerdrop_rate).int()
+            # Currently we just use all layers during inference
+            # TODO Change this to accept a list of layers (or some instance variable) to test different layer allocations during inference
             else:
                 retained_layers = torch.ones(self.img_backbone.total_depth)
-                
+            
             img_feats = self.img_backbone(img.float(), retained_layers)
             if isinstance(img_feats, dict):
                 img_feats = list(img_feats.values())
         else:
-            return None
+            return None # Return none for img_feat if no img_backbone or img input
+        
+        # Pass through additional neck (usually a feature pyramid network that merges multiscale features)
         if self.with_img_neck:
             img_feats = self.img_neck(img_feats)
 
@@ -72,31 +84,38 @@ class CmtDetector(MVXTwoStageDetector):
 
     def extract_pts_feat(self, voxel_dict, points, img_feats, batch_input_metas):
         if self.with_pts_backbone:
+            # Keep operations in float32 to preseve voxelization accuracy
             with torch.autocast('cuda', enabled=False):
                 voxels = voxel_dict['voxels']
                 coors = voxel_dict['coors']
                 """Extract features of points."""
+
+                # Depending on the type of voxel encoder, we pass it different parameters
                 if isinstance(self.pts_voxel_encoder, DynamicVFE_New) or isinstance(self.pts_voxel_encoder, DynamicVFE):
                     voxel_features, coors, low_level_point_feature, indices = self.pts_voxel_encoder(voxels, coors)
                 else:
                     voxel_features = self.pts_voxel_encoder(voxels, voxel_dict['num_points'], coors)
                 batch_size = coors[-1, 0] + 1
 
+                # LAYERDROP LOGIC: We have four layers per BasicBlock (hard coded by FlatFormer).
                 if self.training:
-                    # 4 Layers per basicblock
                     retained_layers = (torch.rand(len(self.pts_middle_encoder.block_list) * 4) > self.layerdrop_rate).int()
                 else:
                     retained_layers = torch.ones(len(self.pts_middle_encoder.block_list) * 4)
 
+                # Middle encoder is the FlatFormer model
                 x = self.pts_middle_encoder(voxel_features, coors, batch_size, retained_layers)
                 x = self.pts_backbone(x)
                 if self.with_pts_neck:
                     x = self.pts_neck(x)
+
+                # The calling functione expects a list
                 if not isinstance(x, list):
                     x = [x]
                 return x
         return [None]
 
+    # This is the main feature extract function that calls the subfunctions for pts and images
     def extract_feat(self, batch_inputs_dict,
                      batch_input_metas):
         """Extract features from images and points.
@@ -124,15 +143,13 @@ class CmtDetector(MVXTwoStageDetector):
             img_feats=img_feats,
             batch_input_metas=batch_input_metas)
 
-        # Enable modal mask only when training, replace with zero features
+        # TODO: Currently modal masking is enabled only for masking out lidar since we train lidar only model at the start
+        # Change this later to modal mask both modalities
         if self.training and self.enable_modal_mask:
+            # Modal mask by removing lidar with 50% probability during training, do not do this during inference
             modal_mask = (torch.rand(pts_feats[0].shape[0]) > 0.5).int()
             modal_mask = modal_mask.to(pts_feats[0].device)
-
             pts_feats = [item * modal_mask[:, None, None, None] for item in pts_feats]
-        # Test img only accuracy
-        # if not self.training:
-        #     pts_feats = [item * 0.0 for item in pts_feats]
 
         return (img_feats, pts_feats)
 

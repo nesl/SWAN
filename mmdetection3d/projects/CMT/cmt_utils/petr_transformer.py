@@ -1,3 +1,11 @@
+'''
+Docstring for projects.CMT.cmt_utils.petr_transformer
+
+The PETRTransformer acts as the actual encoder/decoder that is wrapped
+inside the CMTTransformer
+
+'''
+
 
 import warnings
 import torch

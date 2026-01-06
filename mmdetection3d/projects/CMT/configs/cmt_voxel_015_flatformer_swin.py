@@ -1,3 +1,12 @@
+'''
+Trains everything from scratch, jointly trains both the lidar and image backbones
+I have not had much success using this yet, it seems like my modalities will underfit rather severely
+May be better to start from one modality's checkpoint, similarly to BEVFusion (from pretrained img + lidar)
+or the original CMT paper that begin from pretrained image checkpoints
+'''
+
+
+
 _base_ = ['../../../configs/_base_/default_runtime.py']
 custom_imports = dict(
     imports=['projects.BEVFusion.bevfusion', 'projects.UniM2AE', 'projects.CMT'], allow_failed_imports=False)

@@ -1,3 +1,16 @@
+'''
+We train from the pretrained lidar checkpoint that does about 0.62 mAP
+Unfreeze lidar but make sure the learning rate is low
+Train image with modal masking to make sure that the image backbone actually learns
+
+Final result about 0.66 mAP, which is good w the limited image backbone resolution. 
+TODO test the image only performance, may be able to push more performance from this
+
+'''
+
+
+
+
 _base_ = ['../../../configs/_base_/default_runtime.py']
 custom_imports = dict(
     imports=['projects.BEVFusion.bevfusion', 'projects.UniM2AE', 'projects.CMT'], allow_failed_imports=False)
@@ -125,16 +138,6 @@ model = dict(
             'https://github.com/SwinTransformer/storage/releases/download/v1.0.0/swin_tiny_patch4_window7_224.pth'  # noqa: E501
         )
     ),
-    # LSSFPN is not a good fit for CMT
-    # img_neck=dict(
-    #     type='GeneralizedLSSFPN',
-    #     in_channels=[192, 384, 768],
-    #     out_channels=256,
-    #     start_level=0,
-    #     num_outs=3,
-    #     norm_cfg=dict(type='BN2d', requires_grad=True),
-    #     act_cfg=dict(type='ReLU', inplace=True),
-    #     upsample_cfg=dict(mode='bilinear', align_corners=False)),
 
     img_neck=dict(
         type='CPFPN',
@@ -395,13 +398,14 @@ train_cfg = dict(by_epoch=True, max_epochs=20, val_interval=1)
 val_cfg = dict()
 test_cfg = dict()
 
+# For the lidar components, set a smaller LR so they dont get overwritten at the start
 optim_wrapper = dict(
     type='AmpOptimWrapper',
     optimizer=dict(type='AdamW', lr=0.0001, weight_decay=0.01),
     clip_grad=dict(max_norm=35, norm_type=2),
     paramwise_cfg=dict(
         custom_keys={
-            'pts_bbox_head': dict(lr_mult=0.01),
+            'pts_bbox_head': dict(lr_mult=0.01), # bbox head is tuned for lidar performance right now
             'pts_middle_encoder': dict(lr_mult=0.01),
             'pts_backbone': dict(lr_mult=0.01),
             'pts_neck':dict(lr_mult=0.01),
@@ -416,17 +420,13 @@ default_hooks = dict(
     logger=dict(type='LoggerHook', interval=50),
     checkpoint=dict(type='CheckpointHook', interval=1))
 
-custom_hooks = [
-    dict(type='DisableObjectSampleHook', disable_after_epoch=15),
-]
-
 randomness = dict(
     seed=100,
     diff_rank_seed=False,
     # deterministic=True
 )
 
-find_unused_parameters=True
+find_unused_parameters=True # If we do modal dropping find_unused_parameters must be true or else it throws error
 
 resume = False
-load_from='work_dirs/cmt_voxel_015_flatformer/epoch_20.pth'
+load_from='work_dirs/cmt_voxel_015_flatformer/epoch_20.pth' # Load the weights from the flatformer

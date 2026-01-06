@@ -1,12 +1,22 @@
+'''
+Swin Transformer Training with LayerDrop
+Achieves NDS: 0.4217  mAP: 0.3439 at Epoch 50
+Layerdropped results to come
+
+'''
+
 _base_ = ['../../../configs/_base_/default_runtime.py']
 custom_imports = dict(
     imports=['projects.BEVFusion.bevfusion', 'projects.UniM2AE', 'projects.CMT'], allow_failed_imports=False)
 
+# These are point cloud specific, kept them anyways since some downstream components refer to them, unsure if we can remove
 voxel_size = (0.15, 0.15, 8) 
 grid_size = (720, 720, 1)
 window_shape=(16, 16, 1)
 sparse_shape = (720, 720, 1)
 out_size_factor = 4
+
+# Change the point cloud range slightly smaller to prevent out of bounds errors due to strange rounding
 point_cloud_range = [-54.0, -54.0, -5.0, 53.95, 53.95, 2.95]
 class_names = [
     'car', 'truck', 'construction_vehicle', 'bus', 'trailer', 'barrier',
@@ -48,10 +58,7 @@ model = dict(
     ),
     layerdrop_rate=0.2,
    
-
     # BEGIN CAMERA COMPONENTS
-
-    # Hopefully I can override w my saved model parameters...
     img_backbone = dict(
         type='mmdet.SwinTransformer',
         embed_dims=96,
@@ -72,18 +79,9 @@ model = dict(
             type='Pretrained',
             checkpoint=  # noqa: E251
             'https://github.com/SwinTransformer/storage/releases/download/v1.0.0/swin_tiny_patch4_window7_224.pth'  # noqa: E501
+            # This is a default pretrained swintransformer, NOT OPTIMIZED FOR NUSCENES
         )
     ),
-    # LSSFPN is not a good fit for CMT
-    # img_neck=dict(
-    #     type='GeneralizedLSSFPN',
-    #     in_channels=[192, 384, 768],
-    #     out_channels=256,
-    #     start_level=0,
-    #     num_outs=3,
-    #     norm_cfg=dict(type='BN2d', requires_grad=True),
-    #     act_cfg=dict(type='ReLU', inplace=True),
-    #     upsample_cfg=dict(mode='bilinear', align_corners=False)),
 
     img_neck=dict(
         type='CPFPN',
@@ -157,7 +155,6 @@ model = dict(
             dataset='nuScenes',
             assigner=dict(
                 type='HungarianAssigner3D_CMT',
-                # cls_cost=dict(type='ClassificationCost', weight=2.0),
                 cls_cost=dict(type='mmdet.FocalLossCost', weight=2.0),
                 reg_cost=dict(type='BBox3DL1Cost', weight=0.25),
                 iou_cost=dict(type='IoU3DCost_CMT', weight=0.0), # Fake cost. This is just to make it compatible with DETR head. 
@@ -188,7 +185,7 @@ model = dict(
 )
 
 
-
+# Keep the lidar loading since strange things happen when it is removed
 train_pipeline = [
     dict(
         type='LoadPointsFromFile',
@@ -251,12 +248,6 @@ test_pipeline = [
     # 2. Load Images (Same as before)
     dict(type='LoadMultiViewImageFromFiles'),
     
-    # 3. Standard Transforms (Flattened - removed MultiScaleFlipAug3D wrapper)
-    # The 'GlobalRotScaleTrans' with 0/1 does nothing, so we can verify weights 
-    # more safely by removing it to avoid any rounding errors.
-    
-    # dict(type='RandomFlip3D'), # Removed because flip=False in your config
-    
     dict(type='ResizeCropFlipImage', data_aug_conf=ida_aug_conf, training=False),
     
     dict(type='NormalizeMultiviewImage', **img_norm_cfg),
@@ -281,6 +272,7 @@ train_dataloader = dict(
     num_workers=16,
     persistent_workers=True,
     sampler=dict(type='DefaultSampler', shuffle=True),
+    # CBGSDataset repeats samples that are more difficult
     dataset=dict(
         type='CBGSDataset',
         dataset=dict(
@@ -345,7 +337,7 @@ test_cfg = dict()
 
 optim_wrapper = dict(
     type='AmpOptimWrapper',
-    optimizer=dict(type='AdamW', lr=0.0001, weight_decay=0.01),
+    optimizer=dict(type='AdamW', lr=0.0001, weight_decay=0.01), # THE LR HERE IS OVERWRITTEN
     clip_grad=dict(max_norm=35, norm_type=2))
 
 

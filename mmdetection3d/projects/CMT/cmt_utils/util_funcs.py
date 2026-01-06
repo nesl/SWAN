@@ -1,3 +1,14 @@
+'''
+Docstring for projects.CMT.cmt_utils.util_funcs
+
+Random miscellaneous functions that are utilized
+
+Also include custom training hooks
+TODO Should migrate them over to hooks.py
+'''
+
+
+
 import torch
 
 from mmdet.models.task_modules import AssignResult, BaseAssigner, BaseBBoxCoder

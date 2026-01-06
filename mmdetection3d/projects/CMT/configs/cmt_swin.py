@@ -1,3 +1,5 @@
+# See cmt_swin_layerdrop.py, similar except different LR, training cycle, and no layerdrop
+
 _base_ = ['../../../configs/_base_/default_runtime.py']
 custom_imports = dict(
     imports=['projects.BEVFusion.bevfusion', 'projects.UniM2AE', 'projects.CMT'], allow_failed_imports=False)

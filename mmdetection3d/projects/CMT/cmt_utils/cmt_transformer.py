@@ -8,6 +8,13 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 # ------------------------------------------------------------------------
 
+'''
+Contains our CMT Transformer which handles the DETR encoder/decoder processing of our modality features
+We have three variants that have the same weights: CMTTransformer, CMTImageTransformer, CMTLidarTransformer
+We specify the type of decoder and encoder in the config file
+
+'''
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

@@ -1,11 +1,21 @@
+'''
+We train a lidar only, unimodal detection model
+This utilizes the flatformer lidar backbone which is faster than SST
+and competitive with classic convolutional backbones
+'''
+
+
 _base_ = ['../../../configs/_base_/default_runtime.py']
 custom_imports = dict(
     imports=['projects.BEVFusion.bevfusion', 'projects.UniM2AE', 'projects.CMT'], allow_failed_imports=False)
 
+# We are using pillars that cover the entire z axis, and x, y size of 0.15 meters
 voxel_size = (0.15, 0.15, 8) 
+# Given the point cloud range, this corresponds to a grid size of 720 x 720 x 1
 grid_size = (720, 720, 1)
+# We define a local "window" that is used to decide how the tokens are sorted
 window_shape=(16, 16, 1)
-sparse_shape = (720, 720, 1)
+# Out size factor defines after the neck, what is the feature size with respect to grid size. We downsample by 4
 out_size_factor = 4
 point_cloud_range = [-54.0, -54.0, -5.0, 53.95, 53.95, 2.95]
 class_names = [
@@ -31,6 +41,8 @@ backend_args = None
 
 model = dict(
     type='CmtDetector',
+    # We perform dynamic voxelization that assigns points to a given voxel in the grid, can have empty voxels 
+    # Contrasts with hard voxelization in which we either drop points or pad to a certain num_points per voxel
     data_preprocessor=dict(
         type='Det3DDataPreprocessor',
         voxel=True,
@@ -42,6 +54,8 @@ model = dict(
             max_voxels=(-1, -1)
         ),
     ),
+    # Each voxel is translated into a given feature, DynamicVFE_New is from UniM2AE
+    # DynamicVFE is able to process a variable number of points per voxel to turn them into a single feature
     pts_voxel_encoder=dict(
         type='DynamicVFE_New',
         in_channels=5,
@@ -54,20 +68,21 @@ model = dict(
         point_cloud_range=point_cloud_range,
         norm_cfg=dict(type='naiveSyncBN1d', eps=1e-3, momentum=0.01)
     ),
+    # FlatFormer middle encoder
     pts_middle_encoder=dict(
         type='FlatFormer',
         in_channels=128,
         num_heads=8,
-        num_blocks=2,
+        num_blocks=2, # We have two blocks of 4 layers each
         activation="gelu",
         window_shape=window_shape,
-        sparse_shape=sparse_shape,
-        output_shape=[sparse_shape[0], sparse_shape[1]],
+        sparse_shape=grid_size,
+        output_shape=[grid_size[0], grid_size[1]],
         pos_temperature=10000,
         normalize_pos=False,
-        group_size=64,
+        group_size=64, # Group size defines the attention size. We sort according to the windows and then do attention within a group of 64
     ),
-    
+    # Transforms my 720x720 feature map into a multi-scale map, outputs 360 x 360 and 180 x 180
     pts_backbone=dict(
         type='SECOND',
         in_channels=128,
@@ -77,6 +92,7 @@ model = dict(
         conv_cfg=dict(type='Conv2d', bias=False),
         norm_cfg=dict(type='naiveSyncBN2d', eps=1e-3, momentum=0.01),
     ),
+    # FPN unifies into one single 180 x 180 feature map by downsampling and then merging
     pts_neck=dict(
         type='SECONDFPN',
         norm_cfg=dict(type='naiveSyncBN2d', eps=1e-3, momentum=0.01),
@@ -84,8 +100,6 @@ model = dict(
         upsample_strides=[0.5, 1],
         out_channels=[256, 256]
     ),
-
-    # BEGIN CAMERA COMPONENTS
 
     pts_bbox_head=dict(
         type='CmtLidarHead',
@@ -182,7 +196,7 @@ model = dict(
     )
 )
 
-
+# db_sampler acts as a cut+paste in the lidar point cloud, adds additional difficult classes into the training point cloud
 db_sampler = dict(
     data_root=data_root,
     info_path=data_root + 'nuscenes_dbinfos_train.pkl',
@@ -393,6 +407,8 @@ log_processor = dict(window_size=50)
 default_hooks = dict(
     logger=dict(type='LoggerHook', interval=50),
     checkpoint=dict(type='CheckpointHook', interval=1))
+
+# This disables the sampling process after 15 epochs, we train the last 5 epochs on the actual data to prevent domain shift
 custom_hooks = [dict(type='DisableObjectSampleHook', disable_after_epoch=15)]
 
 

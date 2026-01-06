@@ -111,7 +111,8 @@ class BasicLayer(nn.Module):
 
         return src
 
-
+# Each basicblock contains 4 basic layers for x, x_shift, y, and y_shift
+# Add base layer dropping logic here
 class BasicBlock(nn.Module):
     def __init__(
         self,
@@ -130,10 +131,11 @@ class BasicBlock(nn.Module):
                 group_size=group_size,
             )
             self.block.append(layer)
-
+    # TODO: We may have to update this structure slightly when moving towards TensorRT and edge devices 
     def forward(self, x: torch.Tensor, pe: torch.Tensor, mappings: Dict[str, Any], retained_layer_list=None) -> torch.Tensor:
+        # Run through the four basic layers while performing shift and sort operations
         for k, name in enumerate(["x", "x_shift", "y", "y_shift"]):
-            # Do not run layer 
+            # If retained_layer_list is exists and is 0, do not run that particular layer
             if retained_layer_list is not None and not retained_layer_list[k]:
                 continue
             indices = mappings[name]
@@ -330,12 +332,13 @@ class FlatFormer(nn.Module):
 
         self.output_shape = output_shape
 
-
+    # Added LayerDropping Logic
     def forward(self, x, coords, batch_size, retained_layer_list=None):
         pe = self.embedding(coords, x.dtype)
         mappings = self.mapping(coords, batch_size)
 
         for i, block in enumerate(self.block_list):
+            # Chunk the list four at a time for each block
             if retained_layer_list is not None:
                 stage_layer_list = retained_layer_list[i*4:(i+1) * 4]
                 x = block(x, pe, mappings, stage_layer_list)

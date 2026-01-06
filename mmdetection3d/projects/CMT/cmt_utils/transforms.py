@@ -1,3 +1,10 @@
+'''
+Docstring for projects.CMT.cmt_utils.transforms
+
+Set of image and lidar input transformations/augmentations that are applied during the training process
+'''
+
+
 # ------------------------------------------------------------------------
 # Copyright (c) 2023 megvii-model. All Rights Reserved.
 # ------------------------------------------------------------------------
