@@ -131,8 +131,11 @@ class BasicBlock(nn.Module):
             )
             self.block.append(layer)
 
-    def forward(self, x: torch.Tensor, pe: torch.Tensor, mappings: Dict[str, Any]) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, pe: torch.Tensor, mappings: Dict[str, Any], retained_layer_list=None) -> torch.Tensor:
         for k, name in enumerate(["x", "x_shift", "y", "y_shift"]):
+            # Do not run layer 
+            if retained_layer_list is not None and not retained_layer_list[k]:
+                continue
             indices = mappings[name]
             x[indices] = self.block[k](x[indices][mappings["flat2win"]], pe[indices][mappings["flat2win"]])[
                 mappings["win2flat"]
@@ -328,12 +331,16 @@ class FlatFormer(nn.Module):
         self.output_shape = output_shape
 
 
-    def forward(self, x, coords, batch_size):
+    def forward(self, x, coords, batch_size, retained_layer_list=None):
         pe = self.embedding(coords, x.dtype)
         mappings = self.mapping(coords, batch_size)
 
-        for _, block in enumerate(self.block_list):
-            x = block(x, pe, mappings)
+        for i, block in enumerate(self.block_list):
+            if retained_layer_list is not None:
+                stage_layer_list = retained_layer_list[i*4:(i+1) * 4]
+                x = block(x, pe, mappings, stage_layer_list)
+            else:
+                x = block(x, pe, mappings)
 
         x = self.recover_bev(x, coords, batch_size)
 

@@ -563,6 +563,8 @@ class CmtHead(BaseModule):
         """
             list([bs, c, h, w])
         """
+        if img_feats is None:
+            img_feats = [img_feats]
         img_metas = [img_metas for _ in range(len(pts_feats))]
         return multi_apply(self.forward_single, pts_feats, img_feats, img_metas)
     

@@ -26,27 +26,15 @@ class CmtDetector(MVXTwoStageDetector):
 
     def __init__(self,
                  use_grid_mask=False,
-                 enable_sst_swin=False,
+                 enable_modal_mask=False,
+                 layerdrop_rate = 0.0,
                  **kwargs):
         super(CmtDetector, self).__init__(**kwargs)
-        self.enable_sst_swin = enable_sst_swin
-        # if self.enable_sst_swin:
-        #     self.deblock_lidar = nn.Sequential(
-        #         nn.Conv3d(in_channels=128, out_channels=512, kernel_size=3, stride=2, padding=1),
-        #         nn.BatchNorm3d(num_features=512),
-        #         nn.ReLU(inplace=True),
-        #         nn.Conv3d(in_channels=512, out_channels=512, kernel_size=3, stride=2, padding=1),
-        #         nn.BatchNorm3d(num_features=512),
-        #         nn.ReLU(inplace=True),
-        #     )
-        #     self.pts_backbone.load_state_dict(torch.load('model_checkpoints/sst_epoch50_pretrain.pth'))
-            # self.img_backbone.load_state_dict(torch.load('model_checkpoints/fixed_swin.pth'))
+        self.enable_modal_mask = enable_modal_mask
         self.use_grid_mask = use_grid_mask
         self.grid_mask = GridMask(True, True, rotate=1, offset=False, ratio=0.5, mode=1, prob=0.7)
-
-        # if pts_voxel_cfg:
-        #     self.pts_voxel_layer = SPConvVoxelization(**pts_voxel_cfg)
-
+        self.layerdrop_rate = layerdrop_rate
+        
     def init_weights(self):
         """Initialize model weights."""
         super(CmtDetector, self).init_weights()
@@ -66,7 +54,13 @@ class CmtDetector(MVXTwoStageDetector):
                 img = img.view(B * N, C, H, W)
             if self.use_grid_mask:
                 img = self.grid_mask(img)
-            img_feats = self.img_backbone(img.float())
+
+            if self.training:
+                retained_layers = (torch.rand(self.img_backbone.total_depth) > self.layerdrop_rate).int()
+            else:
+                retained_layers = torch.ones(self.img_backbone.total_depth)
+                
+            img_feats = self.img_backbone(img.float(), retained_layers)
             if isinstance(img_feats, dict):
                 img_feats = list(img_feats.values())
         else:
@@ -77,25 +71,70 @@ class CmtDetector(MVXTwoStageDetector):
         return img_feats
 
     def extract_pts_feat(self, voxel_dict, points, img_feats, batch_input_metas):
-        with torch.autocast('cuda', enabled=False):
-            voxels = voxel_dict['voxels']
-            coors = voxel_dict['coors']
-            """Extract features of points."""
-            if isinstance(self.pts_voxel_encoder, DynamicVFE_New) or isinstance(self.pts_voxel_encoder, DynamicVFE):
-                voxel_features, coors, low_level_point_feature, indices = self.pts_voxel_encoder(voxels, coors)
-            else:
-                voxel_features = self.pts_voxel_encoder(voxels, voxel_dict['num_points'], coors)
-            batch_size = coors[-1, 0] + 1
-            x = self.pts_middle_encoder(voxel_features, coors, batch_size)
-            x = self.pts_backbone(x)
-            if self.with_pts_neck:
-                x = self.pts_neck(x)
-            # if self.enable_sst_swin:
-            #     # x = self.deblock_lidar(x)
-            #     x = [x[..., 0]]
-            if not isinstance(x, list):
-                x = [x]
-            return x
+        if self.with_pts_backbone:
+            with torch.autocast('cuda', enabled=False):
+                voxels = voxel_dict['voxels']
+                coors = voxel_dict['coors']
+                """Extract features of points."""
+                if isinstance(self.pts_voxel_encoder, DynamicVFE_New) or isinstance(self.pts_voxel_encoder, DynamicVFE):
+                    voxel_features, coors, low_level_point_feature, indices = self.pts_voxel_encoder(voxels, coors)
+                else:
+                    voxel_features = self.pts_voxel_encoder(voxels, voxel_dict['num_points'], coors)
+                batch_size = coors[-1, 0] + 1
+
+                if self.training:
+                    # 4 Layers per basicblock
+                    retained_layers = (torch.rand(len(self.pts_middle_encoder.block_list) * 4) > self.layerdrop_rate).int()
+                else:
+                    retained_layers = torch.ones(len(self.pts_middle_encoder.block_list) * 4)
+
+                x = self.pts_middle_encoder(voxel_features, coors, batch_size, retained_layers)
+                x = self.pts_backbone(x)
+                if self.with_pts_neck:
+                    x = self.pts_neck(x)
+                if not isinstance(x, list):
+                    x = [x]
+                return x
+        return [None]
+
+    def extract_feat(self, batch_inputs_dict,
+                     batch_input_metas):
+        """Extract features from images and points.
+
+        Args:
+            batch_inputs_dict (dict): Dict of batch inputs. It
+                contains
+
+                - points (List[tensor]):  Point cloud of multiple inputs.
+                - imgs (tensor): Image tensor with shape (B, C, H, W).
+            batch_input_metas (list[dict]): Meta information of multiple inputs
+                in a batch.
+
+        Returns:
+             tuple: Two elements in tuple arrange as
+             image features and point cloud features.
+        """
+        voxel_dict = batch_inputs_dict.get('voxels', None)
+        imgs = batch_inputs_dict.get('imgs', None)
+        points = batch_inputs_dict.get('points', None)
+        img_feats = self.extract_img_feat(imgs, batch_input_metas)
+        pts_feats = self.extract_pts_feat(
+            voxel_dict,
+            points=points,
+            img_feats=img_feats,
+            batch_input_metas=batch_input_metas)
+
+        # Enable modal mask only when training, replace with zero features
+        if self.training and self.enable_modal_mask:
+            modal_mask = (torch.rand(pts_feats[0].shape[0]) > 0.5).int()
+            modal_mask = modal_mask.to(pts_feats[0].device)
+
+            pts_feats = [item * modal_mask[:, None, None, None] for item in pts_feats]
+        # Test img only accuracy
+        # if not self.training:
+        #     pts_feats = [item * 0.0 for item in pts_feats]
+
+        return (img_feats, pts_feats)
 
 
     def forward_train(self,

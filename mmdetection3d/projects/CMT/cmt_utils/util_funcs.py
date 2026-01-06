@@ -650,3 +650,44 @@ class UnifiedDataBaseSampler(object):
             else:
                 valid_samples.append(sampled[i - num_gt])
         return valid_samples
+
+from mmengine.hooks import Hook
+from mmengine.logging import print_log
+from mmengine.dist import is_main_process
+from mmdet3d.registry import HOOKS
+
+@HOOKS.register_module()
+class FreezeLayersHook(Hook):
+    def __init__(self, train_module_names):
+        self.train_module_names = [train_module_names] if isinstance(train_module_names, str) else train_module_names
+
+    def before_run(self, runner):
+        # Use get_model to handle DDP wrappers automatically
+        from mmengine.model import is_model_wrapper
+        model = runner.model
+        if is_model_wrapper(model):
+            model = model.module
+            
+        # 1. Freeze EVERYTHING 
+        for param in model.parameters():
+            param.requires_grad = False
+        
+        # 2. Unfreeze specific modules
+        for target_name in self.train_module_names:
+            found = False
+            for name, module in model.named_modules():
+                if name == target_name:
+                    found = True
+                    for param in module.parameters():
+                        param.requires_grad = True
+                    
+                    if is_main_process():
+                        print_log(f"✅ Unfrozen module: {name}", logger='current')
+            
+            if not found and is_main_process():
+                print_log(f"⚠️ WARNING: Module '{target_name}' not found!", logger='current', level=40)
+
+        # 3. Verification Summary
+        if is_main_process():
+            trainable = [n for n, p in model.named_parameters() if p.requires_grad]
+            print_log(f"--> Total trainable parameter groups: {len(trainable)}", logger='current')

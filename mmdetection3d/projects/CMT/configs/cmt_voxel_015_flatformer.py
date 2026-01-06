@@ -2,13 +2,7 @@ _base_ = ['../../../configs/_base_/default_runtime.py']
 custom_imports = dict(
     imports=['projects.BEVFusion.bevfusion', 'projects.UniM2AE', 'projects.CMT'], allow_failed_imports=False)
 
-# model settings
-# Voxel size for voxel encoder
-# Usually voxel size is changed consistently with the point cloud range
-# If point cloud range is modified, do remember to change all related
-# keys in the config.
-# voxel_size = [0.075, 0.075, 0.2]
-voxel_size = (0.15, 0.15, 8) # I PRETRAINED WITH THIS
+voxel_size = (0.15, 0.15, 8) 
 grid_size = (720, 720, 1)
 window_shape=(16, 16, 1)
 sparse_shape = (720, 720, 1)
@@ -31,13 +25,12 @@ data_prefix = dict(
     CAM_BACK_RIGHT='samples/CAM_BACK_RIGHT',
     CAM_BACK_LEFT='samples/CAM_BACK_LEFT',
     sweeps='sweeps/LIDAR_TOP')
-input_modality = dict(use_lidar=True, use_camera=True)
+input_modality = dict(use_lidar=True, use_camera=False)
 
 backend_args = None
 
 model = dict(
     type='CmtDetector',
-    enable_sst_swin=True,
     data_preprocessor=dict(
         type='Det3DDataPreprocessor',
         voxel=True,
@@ -94,41 +87,8 @@ model = dict(
 
     # BEGIN CAMERA COMPONENTS
 
-    # Hopefully I can override w my saved model parameters...
-    img_backbone = dict(
-        type='mmdet.SwinTransformer',
-        embed_dims=96,
-        depths=[2, 2, 6, 2],
-        num_heads=[3, 6, 12, 24],
-        window_size=7,
-        mlp_ratio=4,
-        qkv_bias=True,
-        qk_scale=None,
-        drop_rate=0.0,
-        attn_drop_rate=0.0,
-        drop_path_rate=0.2,
-        patch_norm=True,
-        out_indices=[1, 2, 3],
-        with_cp=False,
-        convert_weights=True,
-        init_cfg=dict(
-            type='Pretrained',
-            checkpoint=  # noqa: E251
-            'https://github.com/SwinTransformer/storage/releases/download/v1.0.0/swin_tiny_patch4_window7_224.pth'  # noqa: E501
-        )
-    ),
-    img_neck=dict(
-        type='GeneralizedLSSFPN',
-        in_channels=[192, 384, 768],
-        out_channels=256,
-        start_level=0,
-        num_outs=3,
-        norm_cfg=dict(type='BN2d', requires_grad=True),
-        act_cfg=dict(type='ReLU', inplace=True),
-        upsample_cfg=dict(mode='bilinear', align_corners=False)),
-
     pts_bbox_head=dict(
-        type='CmtHead',
+        type='CmtLidarHead',
         in_channels=512,
         hidden_dim=256,
         downsample_scale=out_size_factor,
@@ -151,7 +111,7 @@ model = dict(
         separate_head=dict(
             type='SeparateTaskHead', init_bias=-2.19, final_kernel=1),
         transformer=dict(
-            type='CmtTransformer',
+            type='CmtLidarTransformer',
             decoder=dict(
                 type='PETRTransformerDecoder',
                 return_intermediate=True,
@@ -193,7 +153,6 @@ model = dict(
             dataset='nuScenes',
             assigner=dict(
                 type='HungarianAssigner3D_CMT',
-                # cls_cost=dict(type='ClassificationCost', weight=2.0),
                 cls_cost=dict(type='mmdet.FocalLossCost', weight=2.0),
                 reg_cost=dict(type='BBox3DL1Cost', weight=0.25),
                 iou_cost=dict(type='IoU3DCost_CMT', weight=0.0), # Fake cost. This is just to make it compatible with DETR head. 
@@ -262,11 +221,6 @@ db_sampler = dict(
 
 train_pipeline = [
     dict(
-        type='BEVLoadMultiViewImageFromFiles',
-        to_float32=True,
-        color_type='color',
-        backend_args=backend_args),
-    dict(
         type='LoadPointsFromFile',
         coord_type='LIDAR',
         load_dim=5,
@@ -286,14 +240,6 @@ train_pipeline = [
         with_label_3d=True,
         with_attr_label=False),
     dict(
-        type='ImageAug3D',
-        final_dim=[256, 704],
-        resize_lim=[0.38, 0.55],
-        bot_pct_lim=[0.0, 0.0],
-        rot_lim=[-5.4, 5.4],
-        rand_flip=True,
-        is_train=True),
-    dict(
         type='ObjectSample',
         db_sampler= db_sampler
     ),
@@ -312,17 +258,6 @@ train_pipeline = [
             'barrier', 'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone'
         ]),
     # Actually, 'GridMask' is not used here
-    dict(
-        type='GridMask',
-        use_h=True,
-        use_w=True,
-        max_epoch=6,
-        rotate=1,
-        offset=False,
-        ratio=0.5,
-        mode=1,
-        prob=0.0,
-        fixed_prob=True),
     dict(type='PointShuffle'),
     dict(
         type='Pack3DDetInputs',
@@ -341,11 +276,6 @@ train_pipeline = [
 
 test_pipeline = [
     dict(
-        type='BEVLoadMultiViewImageFromFiles',
-        to_float32=True,
-        color_type='color',
-        backend_args=backend_args),
-    dict(
         type='LoadPointsFromFile',
         coord_type='LIDAR',
         load_dim=5,
@@ -359,14 +289,6 @@ test_pipeline = [
         pad_empty_sweeps=True,
         remove_close=True,
         backend_args=backend_args),
-    dict(
-        type='ImageAug3D',
-        final_dim=[256, 704],
-        resize_lim=[0.48, 0.48],
-        bot_pct_lim=[0.0, 0.0],
-        rot_lim=[0.0, 0.0],
-        rand_flip=False,
-        is_train=False),
     dict(
         type='PointsRangeFilter',
         point_cloud_range=point_cloud_range,
@@ -382,7 +304,7 @@ test_pipeline = [
 ]
 
 train_dataloader = dict(
-    batch_size=9,
+    batch_size=12,
     num_workers=16,
     persistent_workers=True,
     sampler=dict(type='DefaultSampler', shuffle=True),
@@ -440,13 +362,6 @@ optim_wrapper = dict(
         lr=0.0001,
         weight_decay=0.01
     ),
-    # Parameter-specific learning rates move here
-    paramwise_cfg=dict(
-        custom_keys={
-            'img_backbone': dict(lr_mult=0.01, decay_mult=5),
-            'img_neck': dict(lr_mult=0.1),
-        }
-    ),
     # Gradient clipping moves here
     clip_grad=dict(max_norm=35, norm_type=2)
 )
@@ -479,3 +394,5 @@ default_hooks = dict(
     logger=dict(type='LoggerHook', interval=50),
     checkpoint=dict(type='CheckpointHook', interval=1))
 custom_hooks = [dict(type='DisableObjectSampleHook', disable_after_epoch=15)]
+
+

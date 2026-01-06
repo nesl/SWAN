@@ -240,7 +240,7 @@ class CmtImageTransformer(BaseModule):
                 - memory: Output results from encoder, with shape \
                       [bs, embed_dims, h, w].
         """
-        memory = rearrange(x_img, "(bs v) c h w -> (v h w) bs c", bs=bs)
+        memory = rearrange(x_img.float(), "(bs v) c h w -> (v h w) bs c", bs=bs)
         pos_embed = rearrange(rv_pos_embed, "(bs v) h w c -> (v h w) bs c", bs=bs)
         
         query_embed = query_embed.transpose(0, 1)  # [num_query, dim] -> [num_query, bs, dim]
