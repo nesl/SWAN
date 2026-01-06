@@ -20,3 +20,5 @@ WORKDIR /workspace/mmdetection3d
 RUN pip install timm
 RUN pip install torch-scatter -f https://data.pyg.org/whl/torch-2.1.0+cu121.html
 ENV PYTHONPATH="/workspace/mmdetection3d:${PYTHONPATH}"
+
+RUN bash -c 'mv libraries_replace/swin.py /opt/conda/lib/python3.10/site-packages/mmdet/models/backbones/swin.py'
