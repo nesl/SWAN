@@ -9,8 +9,6 @@ import time
 import torch
 import torch.nn as nn
 
-import torchvision
-
 import torch.nn.functional as F
 import numpy as np
 
@@ -20,6 +18,14 @@ from mmdet3d.models.detectors.mvx_two_stage import MVXTwoStageDetector
 from .cmt_utils.grid_mask import GridMask
 from mmdet3d.registry import MODELS
 from torchvision.utils import save_image, make_grid
+
+from mmdet3d.models.voxel_encoders import DynamicVFE
+from mmdet3d.structures import bbox3d2result
+from mmdet3d.models.detectors.mvx_two_stage import MVXTwoStageDetector
+from ..UniM2AE.sst_models import DynamicVFE_New
+
+from .cmt_utils.grid_mask import GridMask
+from mmdet3d.registry import MODELS
 
 
 def save_masked_grid(imgs, msk, output_path="masked_grid.png", alpha=0.5):
@@ -72,6 +78,10 @@ def save_masked_grid(imgs, msk, output_path="masked_grid.png", alpha=0.5):
     # 5. Save the image
     save_image(grid, output_path)
 
+'''
+Top level CMT model
+
+'''
 
 @MODELS.register_module()
 class CmtDetector(MVXTwoStageDetector):
@@ -79,6 +89,8 @@ class CmtDetector(MVXTwoStageDetector):
     def __init__(self,
                  use_grid_mask=False,
                  enable_pruning=False,
+                 enable_modal_mask=False,
+                 layerdrop_rate = 0.0,
                  **kwargs):
         super(CmtDetector, self).__init__(**kwargs)
         
@@ -101,18 +113,15 @@ class CmtDetector(MVXTwoStageDetector):
         )
         self.mask_bias_value=0.2
         self.cutoff_ratio = 0.1
-        # if pts_voxel_cfg:
-        #     self.pts_voxel_layer = SPConvVoxelization(**pts_voxel_cfg)
-        self.total_latency = 0
-        self.img_extract_latency = 0
-        self.lidar_extract_latency = 0
-        self.output_bbox_latency = 0
-        self.sample_count = 0
-
         self.num_lidar_tokens = 0
         self.num_image_tokens = 0
 
-
+        self.enable_modal_mask = enable_modal_mask
+        self.use_grid_mask = use_grid_mask
+        # GridMask will mask the input image to reduce overfitting to the images
+        self.grid_mask = GridMask(True, True, rotate=1, offset=False, ratio=0.5, mode=1, prob=0.7)
+        self.layerdrop_rate = layerdrop_rate
+        
     def init_weights(self):
         """Initialize model weights."""
         super(CmtDetector, self).init_weights()
@@ -125,38 +134,106 @@ class CmtDetector(MVXTwoStageDetector):
             for img_meta in img_metas:
                 img_meta.update(input_shape=input_shape)
 
-            if img.dim() == 5 and img.size(0) == 1:
+            if img.dim() == 5 and img.size(0) == 1: # Batch size 1 we squeeze and remove the batch dimension since img backbone handles 4 dimensional input
                 img.squeeze_(0)
+            # Compress the batch dimension and the N dimension (6 cameras per sample)
             elif img.dim() == 5 and img.size(0) > 1:
                 B, N, C, H, W = img.size()
                 img = img.view(B * N, C, H, W)
             if self.use_grid_mask:
                 img = self.grid_mask(img)
-            start = time.time() 
-            img_feats = self.img_backbone(img.float())
-            self.img_extract_latency += time.time() - start
+            
+            # LAYERDROPPING LOGIC: Generate random mask during training according to the layerdrop rate
+            # 0 indicates a layer is DROPPED, 1 means the layer is RETAINED
+            if self.training:
+                retained_layers = (torch.rand(self.img_backbone.total_depth) > self.layerdrop_rate).int()
+            # Currently we just use all layers during inference
+            # TODO Change this to accept a list of layers (or some instance variable) to test different layer allocations during inference
+            else:
+                retained_layers = torch.ones(self.img_backbone.total_depth)
+            
+            img_feats = self.img_backbone(img.float(), retained_layers)
             if isinstance(img_feats, dict):
                 img_feats = list(img_feats.values())
         else:
-            return None
+            return None # Return none for img_feat if no img_backbone or img input
+        
+        # Pass through additional neck (usually a feature pyramid network that merges multiscale features)
         if self.with_img_neck:
             img_feats = self.img_neck(img_feats)
+
         return img_feats
 
     def extract_pts_feat(self, voxel_dict, points, img_feats, batch_input_metas):
-        with torch.autocast('cuda', enabled=False):
-            voxels = voxel_dict['voxels']
-            coors = voxel_dict['coors']
-            """Extract features of points."""
-            voxel_features = self.pts_voxel_encoder(voxels, voxel_dict['num_points'], coors)
-            batch_size = coors[-1, 0] + 1
-            start = time.time()
-            x = self.pts_middle_encoder(voxel_features, coors, batch_size)
-            x = self.pts_backbone(x)
-            self.lidar_extract_latency += time.time() - start
-            if self.with_pts_neck:
-                x = self.pts_neck(x)
-            return x
+        if self.with_pts_backbone:
+            # Keep operations in float32 to preseve voxelization accuracy
+            with torch.autocast('cuda', enabled=False):
+                voxels = voxel_dict['voxels']
+                coors = voxel_dict['coors']
+                """Extract features of points."""
+
+                # Depending on the type of voxel encoder, we pass it different parameters
+                if isinstance(self.pts_voxel_encoder, DynamicVFE_New) or isinstance(self.pts_voxel_encoder, DynamicVFE):
+                    voxel_features, coors, low_level_point_feature, indices = self.pts_voxel_encoder(voxels, coors)
+                else:
+                    voxel_features = self.pts_voxel_encoder(voxels, voxel_dict['num_points'], coors)
+                batch_size = coors[-1, 0] + 1
+
+                # LAYERDROP LOGIC: We have four layers per BasicBlock (hard coded by FlatFormer).
+                if self.training:
+                    retained_layers = (torch.rand(len(self.pts_middle_encoder.block_list) * 4) > self.layerdrop_rate).int()
+                else:
+                    retained_layers = torch.ones(len(self.pts_middle_encoder.block_list) * 4)
+
+                # Middle encoder is the FlatFormer model
+                x = self.pts_middle_encoder(voxel_features, coors, batch_size, retained_layers)
+                x = self.pts_backbone(x)
+                if self.with_pts_neck:
+                    x = self.pts_neck(x)
+
+                # The calling functione expects a list
+                if not isinstance(x, list):
+                    x = [x]
+                return x
+        return [None]
+
+    # This is the main feature extract function that calls the subfunctions for pts and images
+    def extract_feat(self, batch_inputs_dict,
+                     batch_input_metas):
+        """Extract features from images and points.
+
+        Args:
+            batch_inputs_dict (dict): Dict of batch inputs. It
+                contains
+
+                - points (List[tensor]):  Point cloud of multiple inputs.
+                - imgs (tensor): Image tensor with shape (B, C, H, W).
+            batch_input_metas (list[dict]): Meta information of multiple inputs
+                in a batch.
+
+        Returns:
+             tuple: Two elements in tuple arrange as
+             image features and point cloud features.
+        """
+        voxel_dict = batch_inputs_dict.get('voxels', None)
+        imgs = batch_inputs_dict.get('imgs', None)
+        points = batch_inputs_dict.get('points', None)
+        img_feats = self.extract_img_feat(imgs, batch_input_metas)
+        pts_feats = self.extract_pts_feat(
+            voxel_dict,
+            points=points,
+            img_feats=img_feats,
+            batch_input_metas=batch_input_metas)
+
+        # TODO: Currently modal masking is enabled only for masking out lidar since we train lidar only model at the start
+        # Change this later to modal mask both modalities
+        if self.training and self.enable_modal_mask:
+            # Modal mask by removing lidar with 50% probability during training, do not do this during inference
+            modal_mask = (torch.rand(pts_feats[0].shape[0]) > 0.5).int()
+            modal_mask = modal_mask.to(pts_feats[0].device)
+            pts_feats = [item * modal_mask[:, None, None, None] for item in pts_feats]
+
+        return (img_feats, pts_feats)
 
 
     def forward_train(self,
@@ -273,7 +350,6 @@ class CmtDetector(MVXTwoStageDetector):
 
         start = time.time()
         img_feats, pts_feats = self.extract_feat(batch_inputs_dict, batch_input_metas)
-        import pdb; pdb.set_trace()
         losses = dict()
         if pts_feats or img_feats:
             points_mask, img_mask = None, None
@@ -299,9 +375,10 @@ class CmtDetector(MVXTwoStageDetector):
             losses_pts = self.forward_pts_train(pts_feats, img_feats, gt_bboxes_3d,
                                                 gt_labels_3d, batch_input_metas,
                                                 gt_bboxes_ignore, pts_mask=points_mask, img_mask=img_mask)
-            # Binarization + L1 sparsity
-            losses_pts['img_mask_loss'] = torch.mean(img_mask)
-            losses_pts['pts_mask_loss'] = torch.mean(points_mask)
+            if self.enable_pruning:
+                # Binarization + L1 sparsity
+                losses_pts['img_mask_loss'] = torch.mean(img_mask)
+                losses_pts['pts_mask_loss'] = torch.mean(points_mask)
             losses.update(losses_pts)
         return losses
 
@@ -333,7 +410,6 @@ class CmtDetector(MVXTwoStageDetector):
             - bbox_3d (:obj:`BaseInstance3DBoxes`): Prediction of bboxes,
                 contains a tensor with shape (num_instances, 7).
         """
-        predict_start = time.time()
         batch_input_metas = [item.metainfo for item in batch_data_samples]
         img_feats, pts_feats = self.extract_feat(batch_inputs_dict,
                                                  batch_input_metas)
@@ -343,8 +419,8 @@ class CmtDetector(MVXTwoStageDetector):
             img_mask = (self.img_pruner(img_feats[0]) + self.mask_bias_value).round()
             pts_feats[0] = points_mask * pts_feats[0]
             img_feats = [img_mask * img_feats[0]] # why did i do this?
-            self.num_lidar_tokens += torch.sum(points_mask)
-            self.num_image_tokens += torch.sum(img_mask)
+            # self.num_lidar_tokens += torch.sum(points_mask)
+            # self.num_image_tokens += torch.sum(img_mask)
 
             # img_mask is shape (B, 6, 20, 50)
             # print('------------------------------------------------')
@@ -364,32 +440,12 @@ class CmtDetector(MVXTwoStageDetector):
             # torchvision.utils.save_image(batch_inputs_dict['imgs'][:, [2, 1, 0]], f'cmt_images/test_{self.sample_count}_{torch.sum(points_mask)}_{torch.sum(img_mask)}.png', nrow=3)
         
         self.sample_count += 1
-        start = time.time()
         outs = self.pts_bbox_head(pts_feats, img_feats, batch_input_metas, img_mask=img_mask, pts_mask=points_mask)
-        self.output_bbox_latency += time.time() - start
-        bbox_list = self.pts_bbox_head.get_bboxes(
-            outs, batch_input_metas, rescale=False)
         
-        # bbox_results = [
-        #     bbox3d2result(bboxes, scores, labels)
-        #     for bboxes, scores, labels in bbox_list
-        # ] 
-        self.total_latency += time.time() - predict_start
-        # print('------------------------------------------------')
-        # print(f'Avg Overall Time: {self.total_latency / self.sample_count}')
-        # print(f'\tAvg Img Backbone Time: {self.img_extract_latency / self.sample_count}')
-        # print(f'\tAvg LiDAR Backbone Time: {self.lidar_extract_latency / self.sample_count}')
-        # print(f'\tAvg Feat Fusion + PE Time: {self.pts_bbox_head.feat_fusion_latency / self.sample_count}')
-        # # print(f'\tAvg Bbox Pred Time: {self.pts_bbox_head.bbox_pred_latency / self.sample_count}')
-        # # print(f'\tAvg Bbox Format Time: {self.output_bbox_latency / self.sample_count}')
-        # print(f'Avg RV_PE: {self.pts_bbox_head.rv_pe_latency / self.sample_count}')
-        # print(f'Avg BEV Embed: {self.pts_bbox_head.bev_embedding_latency / self.sample_count}')
-        # print(f'Avg Decoder Fusion: {self.pts_bbox_head.decoder_fusion_latency / self.sample_count}')
-        # print('------------------------------------------------')
+        bbox_list = self.pts_bbox_head.get_bboxes(outs, batch_input_metas, rescale=False)
+    
         return self.add_pred_to_datasample(batch_data_samples, bbox_list)
-        # Instead of previous, call the   res = self.add_pred_to_datasample(batch_data_samples, outputs)
-        # to get a data3dsample thingy
-        return bbox_results
+
 
 
     

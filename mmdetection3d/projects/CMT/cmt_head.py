@@ -5,7 +5,6 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 # ------------------------------------------------------------------------
 
-import time
 import math
 import copy
 import numpy as np
@@ -210,7 +209,14 @@ class SeparateTaskHead(BaseModule):
 
         return ret_dict
 
+'''
+CMTHead is used for the multimodal camera + LiDAR, as it expects both img and point features
+CMTImageHead and CMTLidarHead are used for their respective unimodal trainings
 
+However, we can load weights universally among these heads, the only key difference lies in the arguments of the forward function
+and the internal logic. The architecture and weights themselves are identical among these heads
+
+'''
 @MODELS.register_module()
 class CmtHead(BaseModule):
 
@@ -293,12 +299,7 @@ class CmtHead(BaseModule):
             conv_cfg=dict(type="Conv2d"),
             norm_cfg=dict(type="BN2d")
         )
-        # latency vars
-        self.feat_fusion_latency = 0
-        self.bbox_pred_latency = 0
-        self.rv_pe_latency = 0
-        self.bev_embedding_latency = 0
-        self.decoder_fusion_latency = 0
+        
         # transformer
         self.transformer = MODELS.build(transformer)
         self.reference_points = nn.Embedding(num_query, 3)
@@ -345,7 +346,7 @@ class CmtHead(BaseModule):
         batch_x = (batch_x + 0.5) / x_size
         batch_y = (batch_y + 0.5) / y_size
         coord_base = torch.cat([batch_x[None], batch_y[None]], dim=0)
-        coord_base = coord_base.view(2, -1).transpose(1, 0) # (H*W, 2), we can probably sample this with our mask
+        coord_base = coord_base.view(2, -1).transpose(1, 0) # (H*W, 2)
         return coord_base
 
     def prepare_for_dn(self, batch_size, reference_points, img_metas):
@@ -496,24 +497,19 @@ class CmtHead(BaseModule):
             x: [bs c h w]
             return List(dict(head_name: [num_dec x bs x num_query * head_dim]) ) x task_num
         """
-        single_start = time.time()
         ret_dicts = []
         x = self.shared_conv(x)
         
         reference_points = self.reference_points.weight
         reference_points, attn_mask, mask_dict = self.prepare_for_dn(x.shape[0], reference_points, img_metas)
 
-        
-        start = time.time()
         rv_pos_embeds = self._rv_pe(x_img, img_metas)
-        self.rv_pe_latency += time.time() - start
-        start = time.time()
+
         bev_pos_embeds = self.bev_embedding(pos2embed(self.coords_bev.to(x.device), num_pos_feats=self.hidden_dim))
-        self.bev_embedding_latency += time.time() - start
+
         bev_query_embeds, rv_query_embeds = self.query_embed(reference_points, img_metas)
         query_embeds = bev_query_embeds + rv_query_embeds
-        
-        start = time.time()
+
         outs_dec, _ = self.transformer(
                             x, x_img, query_embeds,
                             bev_pos_embeds, rv_pos_embeds,
@@ -521,9 +517,7 @@ class CmtHead(BaseModule):
                             pts_mask=pts_mask,
                             img_mask=img_mask
                         )
-        self.decoder_fusion_latency += time.time() - start
-        self.feat_fusion_latency += time.time() - single_start
-        start = time.time()
+
         outs_dec = torch.nan_to_num(outs_dec)
 
         reference = inverse_sigmoid(reference_points.clone())
@@ -571,7 +565,6 @@ class CmtHead(BaseModule):
                 outs['dn_mask_dict'] = task_mask_dict
             
             ret_dicts.append(outs)
-        self.bbox_pred_latency += time.time() - start
         return ret_dicts
 
     def forward(self, pts_feats, img_feats=None, img_metas=None, pts_mask=None, img_mask=None):

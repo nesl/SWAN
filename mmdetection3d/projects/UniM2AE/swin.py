@@ -523,8 +523,10 @@ class BasicLayer(nn.Module):
         else:
             self.downsample = None
     
-
-    def forward(self, x, coords, patch_mask, return_x_before_down=False):
+    # Keep layer mask is [0, 1, 0] where 0 is skip and 1 is run this particular layer
+    # Each BasicLayer has the same number of tokens, and potentially ends in a downsample
+    # In my understanding, Swin will have 4 of these basicblocks, with [2, 2, 6, 2] layer config
+    def forward(self, x, coords, patch_mask, return_x_before_down=False, keep_layer_mask=None):
         # prepare the attention mask
         # when the number of visible patches is small, 
         # all patches are partitioned into a single group
@@ -542,14 +544,14 @@ class BasicLayer(nn.Module):
 
         # forward with grouping/masking
         for i, blk in enumerate(self.blocks):
+            # Do not run the block if this is 0
+            if keep_layer_mask and not keep_layer_mask[i]:
+                continue
             gblk = group_block if i % 2 ==0 else group_block_shift
             attn_mask = mask if i % 2 ==0 else mask_shift
             rel_pos_idx = pos_idx if i % 2 ==0 else pos_idx_shift
             x = gblk.group(x)
-            if self.use_checkpoint:
-                x = checkpoint.checkpoint(blk, x, attn_mask, rel_pos_idx)
-            else:
-                x = blk(x, attn_mask, rel_pos_idx)
+            x = blk(x, attn_mask, rel_pos_idx)
             x = gblk.merge(x)
         
         # patch merging
@@ -667,7 +669,7 @@ class SwinTransformer(nn.Module):
         self.num_features = int(embed_dim * 2 ** (self.num_layers - 1))
         self.mlp_ratio = mlp_ratio
         self.drop_path_rate = drop_path_rate
-
+        self.depths = depths
         # split image into non-overlapping patches
         self.patch_embed = PatchEmbed(
             img_size=img_size, patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim,
@@ -726,7 +728,7 @@ class SwinTransformer(nn.Module):
     def no_weight_decay_keywords(self):
         return {'relative_position_bias_table'}
 
-    def forward_features(self, x, mask):
+    def forward_features(self, x, mask, keep_layer_mask=None):
         # patch embedding
         x = self.patch_embed(x)
         if self.ape:
@@ -773,9 +775,13 @@ class SwinTransformer(nn.Module):
         x_vis = x[vis_mask.expand(B, -1)].reshape(B, -1, C)
         coords = coords[vis_mask].reshape(1, -1, 2) # 1 N_vis 2
 
+        if keep_layer_mask:
+            # We run torch.split to group it according to the depth blocks. 
+            keep_layer_mask = torch.split(keep_layer_mask, self.depths)
         # transformer forward
-        for layer in self.layers:
-            x_vis, coords, vis_mask = layer(x_vis, coords, vis_mask)
+        for i, layer in enumerate(self.layers):
+            # Each block gets the correct drop/no drop.
+            x_vis, coords, vis_mask = layer(x_vis, coords, vis_mask, keep_layer_mask=keep_layer_mask[i])
         x_vis = self.norm(x_vis)
 
         return x_vis

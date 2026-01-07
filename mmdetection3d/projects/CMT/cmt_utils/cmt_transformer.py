@@ -8,6 +8,13 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 # ------------------------------------------------------------------------
 
+'''
+Contains our CMT Transformer which handles the DETR encoder/decoder processing of our modality features
+We have three variants that have the same weights: CMTTransformer, CMTImageTransformer, CMTLidarTransformer
+We specify the type of decoder and encoder in the config file
+
+'''
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -118,6 +125,7 @@ class CmtTransformer(BaseModule):
                       [bs, embed_dims, h, w].
         """
         bs, c, h, w = x.shape
+
         bev_memory = rearrange(x, "bs c h w -> (h w) bs c") # [bs, n, c, h, w] -> [n*h*w, bs, c]
         rv_memory = rearrange(x_img, "(bs v) c h w -> (v h w) bs c", bs=bs)
         bev_pos_embed = bev_pos_embed.unsqueeze(1).repeat(1, bs, 1) # [bs, n, c, h, w] -> [n*h*w, bs, c]
@@ -292,7 +300,7 @@ class CmtImageTransformer(BaseModule):
                 - memory: Output results from encoder, with shape \
                       [bs, embed_dims, h, w].
         """
-        memory = rearrange(x_img, "(bs v) c h w -> (v h w) bs c", bs=bs)
+        memory = rearrange(x_img.float(), "(bs v) c h w -> (v h w) bs c", bs=bs)
         pos_embed = rearrange(rv_pos_embed, "(bs v) h w c -> (v h w) bs c", bs=bs)
         
         query_embed = query_embed.transpose(0, 1)  # [num_query, dim] -> [num_query, bs, dim]

@@ -24,7 +24,7 @@ class SaveImgAug:
         return results
 
 @TRANSFORMS.register_module()
-class ImageAug3D:
+class ImageAug3D_UniM2AE:
     def __init__(
         self, final_dim, resize_lim, bot_pct_lim, rand_flip, is_train, interpolation='bicubic',
     ):

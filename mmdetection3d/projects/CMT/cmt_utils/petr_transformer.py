@@ -1,3 +1,11 @@
+'''
+Docstring for projects.CMT.cmt_utils.petr_transformer
+
+The PETRTransformer acts as the actual encoder/decoder that is wrapped
+inside the CMTTransformer
+
+'''
+
 
 import warnings
 import torch
@@ -286,6 +294,7 @@ class PETRMultiheadFlashAttention(BaseModule):
             query = query.transpose(0, 1)
             key = key.transpose(0, 1)
             value = value.transpose(0, 1)
+        
         out = self.attn(
             q=query,
             k=key,

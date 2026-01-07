@@ -1,3 +1,14 @@
+'''
+Docstring for projects.CMT.cmt_utils.util_funcs
+
+Random miscellaneous functions that are utilized
+
+Also include custom training hooks
+TODO Should migrate them over to hooks.py
+'''
+
+
+
 import torch
 
 from mmdet.models.task_modules import AssignResult, BaseAssigner, BaseBBoxCoder
@@ -93,7 +104,7 @@ class BBox3DL1Cost(object):
         return bbox_cost * self.weight
     
 @TASK_UTILS.register_module()
-class IoU3DCost(object):
+class IoU3DCost_CMT(object):
     def __init__(self, weight):
         self.weight = weight
 
@@ -582,6 +593,7 @@ class UnifiedDataBaseSampler(object):
                 count += 1
 
                 if with_img:
+                    print(info.keys())
                     if len(info['image_path']) > 0:
                         img_path = os.path.join(
                             self.data_root,
@@ -651,23 +663,23 @@ class UnifiedDataBaseSampler(object):
         return valid_samples
 
 from mmengine.hooks import Hook
+from mmengine.logging import print_log
+from mmengine.dist import is_main_process
 from mmdet3d.registry import HOOKS
 
 @HOOKS.register_module()
 class FreezeLayersHook(Hook):
     def __init__(self, train_module_names):
-        # Expecting a list, e.g., ['img_pruner', 'lidar_pruner']
-        if isinstance(train_module_names, str):
-            train_module_names = [train_module_names]
-        self.train_module_names = train_module_names
+        self.train_module_names = [train_module_names] if isinstance(train_module_names, str) else train_module_names
 
     def before_run(self, runner):
+        # Use get_model to handle DDP wrappers automatically
+        from mmengine.model import is_model_wrapper
         model = runner.model
-        if hasattr(model, 'module'):
+        if is_model_wrapper(model):
             model = model.module
             
-        # 1. Freeze EVERYTHING first
-        model.eval() # Set global mode to eval
+        # 1. Freeze EVERYTHING 
         for param in model.parameters():
             param.requires_grad = False
         

@@ -1,3 +1,10 @@
+'''
+Docstring for projects.CMT.cmt_utils.transforms
+
+Set of image and lidar input transformations/augmentations that are applied during the training process
+'''
+
+
 # ------------------------------------------------------------------------
 # Copyright (c) 2023 megvii-model. All Rights Reserved.
 # ------------------------------------------------------------------------
@@ -153,29 +160,29 @@ class UnifiedObjectSample(object):
         gt_bboxes_3d = input_dict['gt_bboxes_3d']
         gt_labels_3d = input_dict['gt_labels_3d']
 
-        if 'lidar2img' not in input_dict:
-            input_dict['lidar2img'] = []
+        # if 'lidar2img' not in input_dict:
+        #     input_dict['lidar2img'] = []
             
-            # Helper to convert to numpy if it's a list (v1.x quirk)
-            def to_np(x):
-                return np.array(x, dtype=np.float32) if isinstance(x, list) else x
+        #     # Helper to convert to numpy if it's a list (v1.x quirk)
+        #     def to_np(x):
+        #         return np.array(x, dtype=np.float32) if isinstance(x, list) else x
 
-            for i in range(len(input_dict['lidar2cam'])):
-                # 1. Get Extrinsic (LiDAR -> Camera)
-                l2c = to_np(input_dict['lidar2cam'][i]) # 4x4
+        #     for i in range(len(input_dict['lidar2cam'])):
+        #         # 1. Get Extrinsic (LiDAR -> Camera)
+        #         l2c = to_np(input_dict['lidar2cam'][i]) # 4x4
                 
-                # 2. Get Intrinsic (Camera -> Image) & Expand to 4x4
-                c2i_3x3 = to_np(input_dict['cam2img'][i]) # 3x3
-                c2i_4x4 = np.eye(4, dtype=np.float32)
-                c2i_4x4[:3, :3] = c2i_3x3
+        #         # 2. Get Intrinsic (Camera -> Image) & Expand to 4x4
+        #         c2i_3x3 = to_np(input_dict['cam2img'][i]) # 3x3
+        #         c2i_4x4 = np.eye(4, dtype=np.float32)
+        #         c2i_4x4[:3, :3] = c2i_3x3
                 
-                # 3. Compute lidar2img = Intrinsics @ Extrinsics
-                l2i = c2i_4x4 @ l2c
-                input_dict['lidar2img'].append(l2i)
+        #         # 3. Compute lidar2img = Intrinsics @ Extrinsics
+        #         l2i = c2i_4x4 @ l2c
+        #         input_dict['lidar2img'].append(l2i)
                 
-                # Ensure source keys are numpy arrays for the rotation math later
-                input_dict['lidar2cam'][i] = l2c
-                input_dict['cam2img'][i] = c2i_3x3
+        #         # Ensure source keys are numpy arrays for the rotation math later
+        #         input_dict['lidar2cam'][i] = l2c
+        #         input_dict['cam2img'][i] = c2i_3x3
 
         # change to float for blending operation
         points = input_dict['points']
@@ -739,6 +746,9 @@ class GlobalRotScaleTransAll(object):
                 'pcd_scale_factor', 'pcd_trans' and keys in \
                 input_dict['bbox3d_fields'] are updated in the result dict.
         """
+        if 'transformation_3d_flow' not in input_dict:
+            input_dict['transformation_3d_flow'] = []
+
         if 'lidar2img' not in input_dict:
             input_dict['lidar2img'] = []
             
@@ -762,9 +772,6 @@ class GlobalRotScaleTransAll(object):
                 # Ensure source keys are numpy arrays for the rotation math later
                 input_dict['lidar2cam'][i] = l2c
                 input_dict['cam2img'][i] = c2i_3x3
-                
-        if 'transformation_3d_flow' not in input_dict:
-            input_dict['transformation_3d_flow'] = []
 
         if 'bbox3d_fields' not in input_dict:
             input_dict['bbox3d_fields'] = []
