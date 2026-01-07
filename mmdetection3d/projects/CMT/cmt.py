@@ -97,20 +97,22 @@ class CmtDetector(MVXTwoStageDetector):
         self.use_grid_mask = use_grid_mask
         self.grid_mask = GridMask(True, True, rotate=1, offset=False, ratio=0.5, mode=1, prob=0.7)
         self.enable_pruning = enable_pruning
-        self.img_pruner = torch.nn.Sequential(
-            nn.Conv2d(in_channels=256, out_channels=16, kernel_size=3, padding=1),
-            nn.BatchNorm2d(num_features=16),
-            nn.ReLU(),
-            nn.Conv2d(in_channels=16, out_channels=1, kernel_size=3, padding=1),
-            nn.Sigmoid()
-        )
-        self.lidar_pruner = torch.nn.Sequential(
-            nn.Conv2d(in_channels=512, out_channels=16, kernel_size=3, padding=1),
-            nn.BatchNorm2d(num_features=16),
-            nn.ReLU(),
-            nn.Conv2d(in_channels=16, out_channels=1, kernel_size=3, padding=1),
-            nn.Sigmoid()
-        )
+        # Enable backwards compatibility by avoiding triggering missing keys
+        if self.enable_pruning:
+            self.img_pruner = torch.nn.Sequential(
+                nn.Conv2d(in_channels=256, out_channels=16, kernel_size=3, padding=1),
+                nn.BatchNorm2d(num_features=16),
+                nn.ReLU(),
+                nn.Conv2d(in_channels=16, out_channels=1, kernel_size=3, padding=1),
+                nn.Sigmoid()
+            )
+            self.lidar_pruner = torch.nn.Sequential(
+                nn.Conv2d(in_channels=512, out_channels=16, kernel_size=3, padding=1),
+                nn.BatchNorm2d(num_features=16),
+                nn.ReLU(),
+                nn.Conv2d(in_channels=16, out_channels=1, kernel_size=3, padding=1),
+                nn.Sigmoid()
+            )
         self.mask_bias_value=0.2
         self.cutoff_ratio = 0.1
         self.num_lidar_tokens = 0
@@ -235,7 +237,7 @@ class CmtDetector(MVXTwoStageDetector):
 
         return (img_feats, pts_feats)
 
-
+    # I dont think this is ever called
     def forward_train(self,
                       points=None,
                       img_metas=None,
@@ -362,7 +364,7 @@ class CmtDetector(MVXTwoStageDetector):
 
                 points_mask = points_mask + (points_mask_truncated - points_mask).detach()
                 img_mask = img_mask + (img_mask_truncated - img_mask).detach()
-
+                # Unsure if this is actualy necessary, they should be masked out during the transformer in theory
                 pts_feats[0] = points_mask * pts_feats[0]
                 img_feats = [img_mask * img_feats[0]]
             gt_bboxes_3d = [sample.gt_instances_3d.bboxes_3d for sample in batch_data_samples]
@@ -376,7 +378,7 @@ class CmtDetector(MVXTwoStageDetector):
                                                 gt_labels_3d, batch_input_metas,
                                                 gt_bboxes_ignore, pts_mask=points_mask, img_mask=img_mask)
             if self.enable_pruning:
-                # Binarization + L1 sparsity
+                #L1 sparsity, masks already binary
                 losses_pts['img_mask_loss'] = torch.mean(img_mask)
                 losses_pts['pts_mask_loss'] = torch.mean(points_mask)
             losses.update(losses_pts)

@@ -962,7 +962,7 @@ class CmtImageHead(CmtHead):
         super(CmtImageHead, self). __init__(*args, **kwargs)
         self.shared_conv = None
 
-    def forward_single(self, x, x_img, img_metas):
+    def forward_single(self, x, x_img, img_metas, pts_mask=None, img_mask=None):
         """
             x: [bs c h w]
             return List(dict(head_name: [num_dec x bs x num_query * head_dim]) ) x task_num
@@ -1047,7 +1047,7 @@ class CmtLidarHead(CmtHead):
         bev_embeds = self._bev_query_embed(ref_points, img_metas)
         return bev_embeds, None
     
-    def forward_single(self, x, x_img, img_metas):
+    def forward_single(self, x, x_img, img_metas, pts_mask=None, img_mask=None):
         """
             x: [bs c h w]
             return List(dict(head_name: [num_dec x bs x num_query * head_dim]) ) x task_num
