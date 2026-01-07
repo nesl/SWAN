@@ -147,14 +147,18 @@ class CmtDetector(MVXTwoStageDetector):
             
             # LAYERDROPPING LOGIC: Generate random mask during training according to the layerdrop rate
             # 0 indicates a layer is DROPPED, 1 means the layer is RETAINED
-            if self.training:
-                retained_layers = (torch.rand(self.img_backbone.total_depth) > self.layerdrop_rate).int()
-            # Currently we just use all layers during inference
-            # TODO Change this to accept a list of layers (or some instance variable) to test different layer allocations during inference
+            # Only run this if layerdropping is specifically requested
+            if self.layerdrop_rate > 0.0:
+                if self.training:
+                    retained_layers = (torch.rand(self.img_backbone.total_depth) > self.layerdrop_rate).int()
+                # Currently we just use all layers during inference
+                # TODO Change this to accept a list of layers (or some instance variable) to test different layer allocations during inference
+                else:
+                    retained_layers = torch.ones(self.img_backbone.total_depth)
+                
+                img_feats = self.img_backbone(img.float(), retained_layers)
             else:
-                retained_layers = torch.ones(self.img_backbone.total_depth)
-            
-            img_feats = self.img_backbone(img.float(), retained_layers)
+                img_feats = self.img_backbone(img.float())
             if isinstance(img_feats, dict):
                 img_feats = list(img_feats.values())
         else:
@@ -182,13 +186,17 @@ class CmtDetector(MVXTwoStageDetector):
                 batch_size = coors[-1, 0] + 1
 
                 # LAYERDROP LOGIC: We have four layers per BasicBlock (hard coded by FlatFormer).
-                if self.training:
-                    retained_layers = (torch.rand(len(self.pts_middle_encoder.block_list) * 4) > self.layerdrop_rate).int()
-                else:
-                    retained_layers = torch.ones(len(self.pts_middle_encoder.block_list) * 4)
+                if self.layerdrop_rate > 0.0:
+                    if self.training:
+                        retained_layers = (torch.rand(len(self.pts_middle_encoder.block_list) * 4) > self.layerdrop_rate).int()
+                    else:
+                        retained_layers = torch.ones(len(self.pts_middle_encoder.block_list) * 4)
 
-                # Middle encoder is the FlatFormer model
-                x = self.pts_middle_encoder(voxel_features, coors, batch_size, retained_layers)
+                    # Middle encoder is the FlatFormer model
+                    x = self.pts_middle_encoder(voxel_features, coors, batch_size, retained_layers)
+                else:
+                    x = self.pts_middle_encoder(voxel_features, coors, batch_size)
+
                 x = self.pts_backbone(x)
                 if self.with_pts_neck:
                     x = self.pts_neck(x)
@@ -348,8 +356,6 @@ class CmtDetector(MVXTwoStageDetector):
 
     def loss(self, batch_inputs_dict, batch_data_samples, **kwargs):
         batch_input_metas = [item.metainfo for item in batch_data_samples]
-        voxels, coors = batch_inputs_dict['voxels']['voxels'], batch_inputs_dict['voxels']['coors']
-
         start = time.time()
         img_feats, pts_feats = self.extract_feat(batch_inputs_dict, batch_input_metas)
         losses = dict()
