@@ -42,7 +42,7 @@ class CmtDetector(MVXTwoStageDetector):
             # self.img_backbone.load_state_dict(torch.load('model_checkpoints/fixed_swin.pth'))
         self.use_grid_mask = use_grid_mask
         self.grid_mask = GridMask(True, True, rotate=1, offset=False, ratio=0.5, mode=1, prob=0.7)
-
+        self.corruptset_debug = False # For debug purpose, remove it after shipping
         # if pts_voxel_cfg:
         #     self.pts_voxel_layer = SPConvVoxelization(**pts_voxel_cfg)
 
@@ -76,23 +76,27 @@ class CmtDetector(MVXTwoStageDetector):
         return img_feats
 
     def extract_pts_feat(self, voxel_dict, points, img_feats, batch_input_metas):
-        with torch.autocast('cuda', enabled=False):
-            voxels = voxel_dict['voxels']
-            coors = voxel_dict['coors']
-            """Extract features of points."""
-            if isinstance(self.pts_voxel_encoder, DynamicVFE_New):
-                voxel_features, coors, low_level_point_feature, indices = self.pts_voxel_encoder(voxels, coors)
-            else:
-                voxel_features = self.pts_voxel_encoder(voxels, voxel_dict['num_points'], coors)
-            batch_size = coors[-1, 0] + 1
-            x = self.pts_middle_encoder(voxel_features, coors, batch_size)
-            x = self.pts_backbone(x)
-            if self.with_pts_neck:
-                x = self.pts_neck(x)
-            if self.enable_sst_swin:
-                x = self.deblock_lidar(x)
-                x = [x[..., 0]]
-            return x
+        if not self.with_pts_bbox:
+            return None
+        voxels = voxel_dict['voxels']
+        coors = voxel_dict['coors']
+        """Extract features of points."""
+        # Handle empty voxels case (can happen with DDP data distribution)
+        if len(coors) == 0:
+            return None
+        if isinstance(self.pts_voxel_encoder, DynamicVFE_New):
+            voxel_features, coors, low_level_point_feature, indices = self.pts_voxel_encoder(voxels, coors)
+        else:
+            voxel_features = self.pts_voxel_encoder(voxels, voxel_dict['num_points'], coors)
+        batch_size = coors[-1, 0] + 1
+        x = self.pts_middle_encoder(voxel_features, coors, batch_size)
+        x = self.pts_backbone(x)
+        if self.with_pts_neck:
+            x = self.pts_neck(x)
+        if self.enable_sst_swin:
+            x = self.deblock_lidar(x)
+            x = [x[..., 0]]
+        return x if isinstance(x, list) else [x]
 
 
     def forward_train(self,
@@ -134,7 +138,7 @@ class CmtDetector(MVXTwoStageDetector):
         img_feats, pts_feats = self.extract_feat(
             points, img=img, img_metas=img_metas)
         losses = dict()
-        if pts_feats or img_feats:
+        if pts_feats is not None or img_feats is not None:
             losses_pts = self.forward_pts_train(pts_feats, img_feats, gt_bboxes_3d,
                                                 gt_labels_3d, img_metas,
                                                 gt_bboxes_ignore)
@@ -167,10 +171,9 @@ class CmtDetector(MVXTwoStageDetector):
             pts_feats = [None]
         if img_feats is None:
             img_feats = [None]
-        with torch.autocast('cuda', enabled=False):
-            outs = self.pts_bbox_head(pts_feats, img_feats, img_metas)
-            loss_inputs = [gt_bboxes_3d, gt_labels_3d, outs]
-            losses = self.pts_bbox_head.loss(*loss_inputs)
+        outs = self.pts_bbox_head(pts_feats, img_feats, img_metas)
+        loss_inputs = [gt_bboxes_3d, gt_labels_3d, outs]
+        losses = self.pts_bbox_head.loss(*loss_inputs)
         return losses
 
     def forward_test(self,
@@ -202,21 +205,36 @@ class CmtDetector(MVXTwoStageDetector):
         return self.simple_test(points[0], img_metas[0], img[0], **kwargs)
     
     def loss(self, batch_inputs_dict, batch_data_samples, **kwargs):
+
+
         batch_input_metas = [item.metainfo for item in batch_data_samples]
+
+        if self.corruptset_debug is False:
+            # Normal training
+            # check whether we have corruption severity info in the metas
+            if 'corruption_info' in batch_input_metas[0]:
+                # extract corruption severity info and add them to the batch_inputs_dict
+               
+                corrupotion_info_list = [item['corruption_info'] for item in batch_input_metas]
+                print("Corruption info found in metas, passing to model:", corrupotion_info_list)
+            self.corruptset_debug = True
+
+
+
         img_feats, pts_feats = self.extract_feat(batch_inputs_dict, batch_input_metas)
         losses = dict()
-        if pts_feats or img_feats:
-            gt_bboxes_3d = [sample.gt_instances_3d.bboxes_3d for sample in batch_data_samples]
-            
-            # Extract GT Labels (List[Tensor])
-            gt_labels_3d = [sample.gt_instances_3d.labels_3d for sample in batch_data_samples]
-            # Extract Ignore Masks (Optional - usually None for standard 3D detection)
-            # Old code usually defaults this to None if not present
-            gt_bboxes_ignore = None
-            losses_pts = self.forward_pts_train(pts_feats, img_feats, gt_bboxes_3d,
-                                                gt_labels_3d, batch_input_metas,
-                                                gt_bboxes_ignore)
-            losses.update(losses_pts)
+        # Always run forward pass to ensure all parameters receive gradients for DDP
+        gt_bboxes_3d = [sample.gt_instances_3d.bboxes_3d for sample in batch_data_samples]
+
+        # Extract GT Labels (List[Tensor])
+        gt_labels_3d = [sample.gt_instances_3d.labels_3d for sample in batch_data_samples]
+        # Extract Ignore Masks (Optional - usually None for standard 3D detection)
+        # Old code usually defaults this to None if not present
+        gt_bboxes_ignore = None
+        losses_pts = self.forward_pts_train(pts_feats, img_feats, gt_bboxes_3d,
+                                            gt_labels_3d, batch_input_metas,
+                                            gt_bboxes_ignore)
+        losses.update(losses_pts)
         return losses
 
 

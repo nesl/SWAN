@@ -29,11 +29,11 @@ model = dict(
         embed_dim=96,
         depths=[2, 2, 6, 2],
         num_heads=[3, 6, 12, 24],
-        window_size=7,
+        window_size=8,
         mlp_ratio=4,
         qkv_bias=True,
         qk_scale=None,
-        drop_rate=0.1,
+        drop_rate=0.0,
         drop_path_rate=0.2,     # admn use 0.2 too for vit
         ape=False,
         patch_norm=True,
@@ -49,15 +49,15 @@ model = dict(
         depths=[2, 2, 18, 2],
         mlp_ratio=4,
         num_patches=(8, 22), # Derived from img_size (256/32, 704/32) -> (8, 22)
-        decoder_embed_dim=512,
-        decoder_depth=3,
+        decoder_embed_dim=768,
+        decoder_depth=12,
         decoder_num_heads=16,
-        norm_pix_loss=False,
+        norm_pix_loss=True,
     ),
 )
 auto_scale_lr = dict(enable=True, base_batch_size=32)
 # ----------------- Optimizer -----------------
-lr = 1e-5
+lr = 2.5e-4 
 optim_wrapper = dict(
     type='OptimWrapper', 
     optimizer=dict(type='AdamW', lr=lr, betas=(0.95, 0.99), weight_decay=0.01),
@@ -65,54 +65,13 @@ optim_wrapper = dict(
 )
 
 
-
 param_scheduler = [
-    # learning rate scheduler
-    # During the first 8 epochs, learning rate increases from 0 to lr * 10
-    # during the next 12 epochs, learning rate decreases from lr * 10 to
-    # lr * 1e-4
-     dict(
+    dict(
         type='LinearLR',
-        start_factor=1e-8,
+        start_factor=0.1/10.0,
+        by_epoch=False,
         begin=0,
-        end=2000,
-        by_epoch=False
-        ),
-    dict(
-        type='CosineAnnealingLR',
-        T_max=8,
-        eta_min=lr * 10,
-        begin=0,
-        end=8,
-        by_epoch=True,
-        convert_to_iter_based=True),
-    dict(
-        type='CosineAnnealingLR',
-        T_max=12,
-        eta_min=lr * 1e-4,
-        begin=8,
-        end=50,
-        by_epoch=True,
-        convert_to_iter_based=True),
-    # momentum scheduler
-    # During the first 8 epochs, momentum increases from 0 to 0.85 / 0.95
-    # during the next 12 epochs, momentum increases from 0.85 / 0.95 to 1
-    dict(
-        type='CosineAnnealingMomentum',
-        T_max=8,
-        eta_min=0.85 / 0.95,
-        begin=0,
-        end=8,
-        by_epoch=True,
-        convert_to_iter_based=True),
-    dict(
-        type='CosineAnnealingMomentum',
-        T_max=50,
-        eta_min=1,
-        begin=8,
-        end=50,
-        by_epoch=True,
-        convert_to_iter_based=True)
+        end=1000),
 ]
 
 train_cfg = dict(

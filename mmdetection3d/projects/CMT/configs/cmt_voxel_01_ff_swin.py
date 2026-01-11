@@ -1,6 +1,6 @@
 _base_ = ['../../../configs/_base_/default_runtime.py']
 custom_imports = dict(
-    imports=[ 'projects.LIDAR_Pretrain', 'projects.UniM2AE', 'projects.CMT'], allow_failed_imports=False)
+    imports=['projects.BEVFusion.bevfusion', 'projects.UniM2AE', 'projects.CMT'], allow_failed_imports=False)
 
 # model settings
 # Voxel size for voxel encoder
@@ -8,16 +8,13 @@ custom_imports = dict(
 # If point cloud range is modified, do remember to change all related
 # keys in the config.
 # voxel_size = [0.075, 0.075, 0.2]
-voxel_size = (0.3, 0.3, 4)
-point_cloud_range = [-54.0, -54.0, -5.0, 54.0, 54.0, 3.0]
-grid_size = (360, 360, 2) 
-sparse_shape = (360,360,2) 
-
-window_shape = (16, 16, 1)
+voxel_size = (0.15, 0.15, 4) # I PRETRAINED WITH THIS
+grid_size = (360, 360, 2)
+window_shape=(16, 16, 1)
+sparse_shape = (360, 360, 2)
 encoder_blocks = 8
 out_size_factor = 4
-
-
+point_cloud_range = [-54.0, -54.0, -5.0, 54.0, 54.0, 3.0]
 class_names = [
     'car', 'truck', 'construction_vehicle', 'bus', 'trailer', 'barrier',
     'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone'
@@ -43,30 +40,37 @@ drop_info_training = {
     3: {'max_tokens': 200, 'drop_range': (100, 200)},
     4: {'max_tokens': 256, 'drop_range': (200, 100000)},
 }
-drop_info_test = drop_info_training
-
+drop_info_test = {
+    0: {'max_tokens': 30, 'drop_range': (0, 30)},
+    1: {'max_tokens': 60, 'drop_range': (30, 60)},
+    2: {'max_tokens': 100, 'drop_range': (60, 100)},
+    3: {'max_tokens': 200, 'drop_range': (100, 200)},
+    4: {'max_tokens': 256, 'drop_range': (200, 100000)},
+}
 drop_info = (drop_info_training, drop_info_test)
-# Loss Settings
-use_chamfer = True
-use_num_points = True
-use_fake_voxels = True
-loss_weights = dict(
-    loss_occupied=1.0,
-    loss_num_points_masked=1.0,
-    loss_chamfer_src_masked=1.0,
-    loss_chamfer_dst_masked=1.0,
-    loss_num_points_unmasked=0.0, # Usually don't compute loss on visible parts
-    loss_chamfer_src_unmasked=0.0,
-    loss_chamfer_dst_unmasked=0.0
-)
+# backend_args = dict(
+#     backend='petrel',
+#     path_mapping=dict({
+#         './data/nuscenes/':
+#         's3://openmmlab/datasets/detection3d/nuscenes/',
+#         'data/nuscenes/':
+#         's3://openmmlab/datasets/detection3d/nuscenes/',
+#         './data/nuscenes_mini/':
+#         's3://openmmlab/datasets/detection3d/nuscenes/',
+#         'data/nuscenes_mini/':
+#         's3://openmmlab/datasets/detection3d/nuscenes/'
+#     }))
 backend_args = None
+
+
 model = dict(
-    type='LIDAR_PRETRAIN',
-    
+    type='CmtDetector',
+    # We perform dynamic voxelization that assigns points to a given voxel in the grid, can have empty voxels 
+    # Contrasts with hard voxelization in which we either drop points or pad to a certain num_points per voxel
     data_preprocessor=dict(
         type='Det3DDataPreprocessor',
         voxel=True,
-        voxel_type='dynamic',
+        voxel_type='dynamic',  # <--- here
         voxel_layer=dict(
             max_num_points=-1,
             point_cloud_range=point_cloud_range,
@@ -74,6 +78,8 @@ model = dict(
             max_voxels=(-1, -1)
         ),
     ),
+    # Each voxel is translated into a given feature, DynamicVFE_New is from UniM2AE
+    # DynamicVFE is able to process a variable number of points per voxel to turn them into a single feature
     pts_voxel_encoder=dict(
         type='DynamicVFE_New',
         in_channels=5,
@@ -86,76 +92,134 @@ model = dict(
         point_cloud_range=point_cloud_range,
         norm_cfg=dict(type='naiveSyncBN1d', eps=1e-3, momentum=0.01)
     ),
-
-
+    # FlatFormer middle encoder
     pts_middle_encoder=dict(
-        type='SSTInputLayerV2Masked',
-        window_shape=window_shape,
-        sparse_shape=sparse_shape,
-        voxel_size=voxel_size,
-        shuffle_voxels=True,
-        debug=True,
-        drop_info=drop_info,
-        pos_temperature=10000,
-        normalize_pos=False,
-        mute=True,
-        masking_ratio=0.7,
-        drop_points_th=100,
-        pred_dims=3,
-        use_chamfer=True,
-        use_num_points=True,
-        use_fake_voxels=True,
-        fake_voxels_ratio=0.1
-    ),
-
-    
-    pts_backbone=dict(
-        type='FlatFormer', 
+        type='FlatFormer',
         in_channels=128,
         num_heads=8,
-        num_blocks=2,
+        num_blocks=2, # We have two blocks of 4 layers each
         activation="gelu",
         window_shape=window_shape,
-        sparse_shape=sparse_shape,
-        output_shape=[360, 360], # Match Grid Size
+        sparse_shape=grid_size,
+        output_shape=[grid_size[0], grid_size[1]],
         pos_temperature=10000,
         normalize_pos=False,
-        group_size=144,
-        return_sparse=True
-     
+        group_size=64, # Group size defines the attention size. We sort according to the windows and then do attention within a group of 64
     ),
-
-    pts_neck=dict(
-        type='SSTv2Decoder', 
-        d_model=[128] * 2,  
-        nhead=[8] * 2,
-        num_blocks=2,
-        dim_feedforward=[256] * 2,
-        output_shape=sparse_shape,
-        num_attached_conv=0, # Keep Sparse!
-        debug=True,
-        use_fake_voxels=True,
-        in_channel=128, 
-    ),
-
-    # 6. Head (Reconstruction)
-    bbox_head=dict(
-        type='ReconstructionHead',
+    # Transforms my 720x720 feature map into a multi-scale map, outputs 360 x 360 and 180 x 180
+    pts_backbone=dict(
+        type='SECOND',
         in_channels=128,
-        feat_channels=128,
-        num_chamfer_points=20,
-        chunk_size=3*360*360*2,
-        pred_dims=3,
-        only_masked=True,
-        relative_error=False,
-        loss_weights=loss_weights,
-        use_chamfer=True,
-        use_num_points=True,
-        use_fake_voxels=True,
-        train_cfg=None,
-        test_cfg=None 
+        out_channels=[64, 128],
+        layer_nums=[3, 3],
+        layer_strides=[2, 2],
+        conv_cfg=dict(type='Conv2d', bias=False),
+        norm_cfg=dict(type='BN2d', eps=1e-3, momentum=0.01),
+    ),
+    # FPN unifies into one single 180 x 180 feature map by downsampling and then merging
+    pts_neck=dict(
+        type='SECONDFPN',
+        norm_cfg=dict(type='BN2d', eps=1e-3, momentum=0.01),
+        in_channels=[64, 128],
+        upsample_strides=[0.5, 1],
+        out_channels=[256, 256]
+    ),
+
+    pts_bbox_head=dict(
+        type='CmtLidarHead',
+        in_channels=512,
+        hidden_dim=256,
+        downsample_scale=out_size_factor,
+        common_heads=dict(center=(2, 2), height=(1, 2), dim=(3, 2), rot=(2, 2), vel=(2, 2)),
+        tasks=[
+            dict(num_class=10, class_names=[
+                'car', 'truck', 'construction_vehicle',
+                'bus', 'trailer', 'barrier',
+                'motorcycle', 'bicycle',
+                'pedestrian', 'traffic_cone'
+            ]),
+        ],
+        bbox_coder=dict(
+            type='MultiTaskBBoxCoder',
+            post_center_range=[-61.2, -61.2, -10.0, 61.2, 61.2, 10.0],
+            pc_range=point_cloud_range,
+            max_num=300,
+            voxel_size=voxel_size,
+            num_classes=10), 
+        separate_head=dict(
+            type='SeparateTaskHead', init_bias=-2.19, final_kernel=1),
+        transformer=dict(
+            type='CmtLidarTransformer',
+            decoder=dict(
+                type='PETRTransformerDecoder',
+                return_intermediate=True,
+                num_layers=6,
+                transformerlayers=dict(
+                    type='PETRTransformerDecoderLayer',
+                    with_cp=False,
+                    attn_cfgs=[
+                        dict(
+                            type='MultiheadAttention',
+                            embed_dims=256,
+                            num_heads=8,
+                            dropout=0.1),
+                        dict(
+                            type='PETRMultiheadFlashAttention',
+                            embed_dims=256,
+                            num_heads=8,
+                            dropout=0.1),
+                        ],
+                    ffn_cfgs=dict(
+                        type='FFN',
+                        embed_dims=256,
+                        feedforward_channels=1024,
+                        num_fcs=2,
+                        ffn_drop=0.,
+                        act_cfg=dict(type='ReLU', inplace=True),
+                    ),
+
+                    feedforward_channels=1024, #unused
+                    operation_order=('self_attn', 'norm', 'cross_attn', 'norm',
+                                     'ffn', 'norm')),
+            )),
+        loss_cls=dict(type='mmdet.FocalLoss', use_sigmoid=True, gamma=2, alpha=0.25, reduction='mean', loss_weight=2.0),
+        loss_bbox=dict(type='mmdet.L1Loss', reduction='mean', loss_weight=0.25),
+        loss_heatmap=dict(type='mmdet.GaussianFocalLoss', reduction='mean', loss_weight=1.0),
+    ),
+    train_cfg=dict(
+        pts=dict(
+            dataset='nuScenes',
+            assigner=dict(
+                type='HungarianAssigner3D_CMT',
+                cls_cost=dict(type='mmdet.FocalLossCost', weight=2.0),
+                reg_cost=dict(type='BBox3DL1Cost', weight=0.25),
+                iou_cost=dict(type='IoU3DCost_CMT', weight=0.0), # Fake cost. This is just to make it compatible with DETR head. 
+                pc_range=point_cloud_range,
+                code_weights=[2.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2, 0.2],
+            ),
+            pos_weight=-1,
+            gaussian_overlap=0.1,
+            min_radius=2,
+            grid_size=grid_size,  # [x_len, y_len, 1]
+            voxel_size=voxel_size,
+            out_size_factor=out_size_factor,
+            code_weights=[2.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2, 0.2],
+            point_cloud_range=point_cloud_range)),
+    test_cfg=dict(
+        pts=dict(
+            dataset='nuScenes',
+            grid_size=grid_size,
+            out_size_factor=out_size_factor,
+            pc_range=point_cloud_range,
+            voxel_size=voxel_size,
+            nms_type=None,
+            nms_thr=0.2,
+            use_rotate_nms=True,
+            max_num=200
+        )
     )
 )
+
 
 
 db_sampler = dict(
@@ -196,6 +260,11 @@ db_sampler = dict(
 
 train_pipeline = [
     dict(
+        type='BEVLoadMultiViewImageFromFiles',
+        to_float32=True,
+        color_type='color',
+        backend_args=backend_args),
+    dict(
         type='LoadPointsFromFile',
         coord_type='LIDAR',
         load_dim=5,
@@ -214,11 +283,24 @@ train_pipeline = [
         with_bbox_3d=True,
         with_label_3d=True,
         with_attr_label=False),
-
+    dict(
+        type='ImageAug3D',
+        final_dim=[256, 704],
+        resize_lim=[0.38, 0.55],
+        bot_pct_lim=[0.0, 0.0],
+        rot_lim=[-5.4, 5.4],
+        rand_flip=True,
+        is_train=True),
     dict(
         type='ObjectSample',
         db_sampler= db_sampler
     ),
+    dict(
+        type='BEVFusionGlobalRotScaleTrans',
+        scale_ratio_range=[0.9, 1.1],
+        rot_range=[-0.78539816, 0.78539816],
+        translation_std=0.5),
+    dict(type='BEVFusionRandomFlip3D'),
     dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
     dict(type='ObjectRangeFilter', point_cloud_range=point_cloud_range),
     dict(
@@ -228,6 +310,17 @@ train_pipeline = [
             'barrier', 'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone'
         ]),
     # Actually, 'GridMask' is not used here
+    dict(
+        type='GridMask',
+        use_h=True,
+        use_w=True,
+        max_epoch=6,
+        rotate=1,
+        offset=False,
+        ratio=0.5,
+        mode=1,
+        prob=0.0,
+        fixed_prob=True),
     dict(type='PointShuffle'),
     dict(
         type='Pack3DDetInputs',
@@ -246,6 +339,11 @@ train_pipeline = [
 
 test_pipeline = [
     dict(
+        type='BEVLoadMultiViewImageFromFiles',
+        to_float32=True,
+        color_type='color',
+        backend_args=backend_args),
+    dict(
         type='LoadPointsFromFile',
         coord_type='LIDAR',
         load_dim=5,
@@ -260,6 +358,14 @@ test_pipeline = [
         remove_close=True,
         backend_args=backend_args),
     dict(
+        type='ImageAug3D',
+        final_dim=[256, 704],
+        resize_lim=[0.48, 0.48],
+        bot_pct_lim=[0.0, 0.0],
+        rot_lim=[0.0, 0.0],
+        rand_flip=False,
+        is_train=False),
+    dict(
         type='PointsRangeFilter',
         point_cloud_range=[-54.0, -54.0, -5.0, 54.0, 54.0, 3.0]),
     dict(
@@ -273,8 +379,8 @@ test_pipeline = [
 ]
 
 train_dataloader = dict(
-    batch_size=32,
-    num_workers=16,
+    batch_size=4,
+    num_workers=12,
     persistent_workers=True,
     sampler=dict(type='DefaultSampler', shuffle=True),
     dataset=dict(
@@ -324,8 +430,8 @@ visualizer = dict(
     type='Det3DLocalVisualizer', vis_backends=vis_backends, name='visualizer')
 
 optim_wrapper = dict(
-    type='OptimWrapper',  # Native Mixed Precision wrapper
-    
+    type='Optim',  # Native Mixed  wrapper
+    dtype='float16',        # Use 'bfloat16' for your H100. Use 'float16' otherwise.
     optimizer=dict(
         type='AdamW',
         lr=0.0001,
@@ -334,6 +440,8 @@ optim_wrapper = dict(
     # Parameter-specific learning rates move here
     paramwise_cfg=dict(
         custom_keys={
+            'img_backbone': dict(lr_mult=0.01, decay_mult=5),
+            'img_neck': dict(lr_mult=0.1),
             'pts_backbone': dict(lr_mult=0.1),
         }
     ),
@@ -344,7 +452,7 @@ optim_wrapper = dict(
 param_scheduler = [
     dict(
         type='OneCycleLR',
-        total_steps=50,            # Total epochs
+        total_steps=20,            # Total epochs
         by_epoch=True,             # It's an epoch-based scheduler
         eta_max=0.0001,            # Max LR
         pct_start=0.4,             # Matches step_ratio_up=0.4
@@ -354,11 +462,7 @@ param_scheduler = [
     )
 ]
 # runtime settings
-train_cfg = dict(
-    type='EpochBasedTrainLoop',
-    max_epochs=50,
-    val_interval=51
-)
+train_cfg = dict(by_epoch=True, max_epochs=20, val_interval=1)
 val_cfg = dict()
 test_cfg = dict()
 
@@ -373,3 +477,8 @@ default_hooks = dict(
     logger=dict(type='LoggerHook', interval=50),
     checkpoint=dict(type='CheckpointHook', interval=1))
 custom_hooks = [dict(type='DisableObjectSampleHook', disable_after_epoch=15)]
+
+# Fix for DDP unused parameters error
+model_wrapper_cfg = dict(
+    type='MMDistributedDataParallel',
+    detect_anomalous_params = True)

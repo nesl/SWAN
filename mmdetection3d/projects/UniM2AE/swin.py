@@ -663,6 +663,8 @@ class SwinTransformer(nn.Module):
         self.mlp_ratio = mlp_ratio
         self.drop_path_rate = drop_path_rate
         self.depths = depths
+        # Total depth for layer dropping - sum of all layer depths
+        self.total_depth = sum(depths)
         # split image into non-overlapping patches
         self.patch_embed = PatchEmbed(
             img_size=img_size, patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim,
@@ -781,8 +783,8 @@ class SwinTransformer(nn.Module):
 
         return x_vis
 
-    def forward(self, x, mask):
-        return self.forward_features(x, mask)
+    def forward(self, x, mask, retained_layers=None):
+        return self.forward_features(x, mask, keep_layer_mask=retained_layers)
 
     def flops(self):
         flops = 0
@@ -835,7 +837,10 @@ class MAESwinEncoder(nn.Module):
 
         # Calculate total patches at the encoder's output resolution (e.g., 7x7=49)
         self.num_patches = np.prod(self.encoder.layers[-1].input_resolution)
-        
+
+        # Expose total_depth from the underlying encoder for layer dropping
+        self.total_depth = self.encoder.total_depth
+
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -871,7 +876,7 @@ class MAESwinEncoder(nn.Module):
 
         return mask, ids_restore, ids_shuffle
 
-    def forward(self, x, camera_only=False):
+    def forward(self, x, camera_only=False, retained_layers=None):
         # Generate the main mask
         mask, ids_restore, ids_shuffle = self.random_masking(x, self.mask_ratio)
 
@@ -880,15 +885,15 @@ class MAESwinEncoder(nn.Module):
             mask_full, ids_restore_full, _ = self.random_masking(x, 0)
 
             # 1. Get full features (L tokens)
-            latent_full = self.encoder(x, mask_full.bool())
+            latent_full = self.encoder(x, mask_full.bool(), retained_layers=retained_layers)
             D = latent_full.shape[-1]
-            
-            # 2. Align features: Put full latent tokens in spatial order, 
+
+            # 2. Align features: Put full latent tokens in spatial order,
             # then re-shuffle them using the main mask's shuffle indices.
             # This ensures the first 'len_keep' tokens match the visible patches.
             idx_full = ids_restore_full.unsqueeze(-1).expand(-1, -1, D)
             latent_spatial = torch.gather(latent_full, dim=1, index=idx_full)
-            
+
             idx_shuffle = ids_shuffle.unsqueeze(-1).expand(-1, -1, D)
             latent_shuffled = torch.gather(latent_spatial, dim=1, index=idx_shuffle)
 
@@ -897,10 +902,10 @@ class MAESwinEncoder(nn.Module):
             latent = latent_shuffled[:, :len_keep, :]
 
             return latent, latent_full, mask, ids_restore, ids_restore_full
-        
+
         else:
             # Standard single-pass encoding
-            latent = self.encoder(x, mask.bool())
+            latent = self.encoder(x, mask.bool(), retained_layers=retained_layers)
             return latent, mask, ids_restore
 
 
