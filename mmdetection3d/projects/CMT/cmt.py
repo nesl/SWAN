@@ -148,7 +148,7 @@ class CmtDetector(MVXTwoStageDetector):
         imgs = batch_inputs_dict.get('imgs', None)
         points = batch_inputs_dict.get('points', None)
 
-        drop_all_lidar_layers, drop_all_img_layers = True, False
+        drop_all_lidar_layers, drop_all_img_layers = False, False
         if self.training and self.enable_modal_mask:
             # Modal mask by removing lidar with 50% probability during training, do not do this during inference
             if torch.rand(1).item() < 0.3:
