@@ -668,6 +668,31 @@ from mmengine.dist import is_main_process
 from mmdet3d.registry import HOOKS
 
 @HOOKS.register_module()
+class FreezeSpecificModuleHook(Hook):
+    def __init__(self, freeze_names):
+        self.freeze_module_names = [freeze_names] if isinstance(freeze_names, str) else freeze_names
+
+    def before_run(self, runner):
+        # Use get_model to handle DDP wrappers automatically
+        from mmengine.model import is_model_wrapper
+        model = runner.model
+        if is_model_wrapper(model):
+            model = model.module
+            
+        # 1. Freeze Specified Modules 
+        for target_name in self.freeze_module_names:
+            for name, module in model.named_modules():
+                if target_name in name:
+                    print_log(f"Found {target_name}")
+                    for param in module.parameters():
+                        param.requires_grad = False
+
+        # 3. Verification Summary
+        if is_main_process():
+            trainable = [n for n, p in model.named_parameters() if p.requires_grad]
+            print_log(f"--> Total trainable parameter groups: {len(trainable)}", logger='current')
+
+@HOOKS.register_module()
 class FreezeLayersHook(Hook):
     def __init__(self, train_module_names):
         self.train_module_names = [train_module_names] if isinstance(train_module_names, str) else train_module_names
