@@ -93,12 +93,17 @@ class CmtDetector(MVXTwoStageDetector):
                  layerdrop_rate = 0.0,
                  test_img_retained_layers = None,
                  test_lidar_retained_layers = None,
+                 controller = None,
                  **kwargs):
         super(CmtDetector, self).__init__(**kwargs)
         
         self.use_grid_mask = use_grid_mask
         self.grid_mask = GridMask(True, True, rotate=1, offset=False, ratio=0.5, mode=1, prob=0.7)
         self.enable_pruning = enable_pruning
+        if controller:
+            self.controller = MODELS.build(controller)
+        else:
+            self.controller = None
         # Enable backwards compatibility by avoiding triggering missing keys
         if self.enable_pruning:
             self.img_pruner = torch.nn.Sequential(
@@ -134,7 +139,7 @@ class CmtDetector(MVXTwoStageDetector):
         """Initialize model weights."""
         super(CmtDetector, self).init_weights()
 
-    def extract_img_feat(self, img, img_metas, drop_all_img_layers=False):
+    def extract_img_feat(self, img, img_metas, controller_selected_layers=None, drop_all_img_layers=False):
         """Extract features of images."""
         if self.with_img_backbone and img is not None:
             input_shape = img.shape[-2:]
@@ -150,7 +155,12 @@ class CmtDetector(MVXTwoStageDetector):
                 img = img.view(B * N, C, H, W)
             if self.use_grid_mask:
                 img = self.grid_mask(img)
-            
+
+            retained_layers=None
+            controller_training = self.controller is not None and self.training
+            if controller_selected_layers is not None:
+                retained_layers = controller_selected_layers
+                
             # LAYERDROPPING LOGIC: Generate random mask during training according to the layerdrop rate
             # 0 indicates a layer is DROPPED, 1 means the layer is RETAINED
             
@@ -163,7 +173,8 @@ class CmtDetector(MVXTwoStageDetector):
             else:
                 retained_layers = self.test_img_retained_layers
                 
-            img_feats = self.img_backbone(img.float(), retained_layers)
+            img_feats = self.img_backbone(img.float(), retained_layer_list=retained_layers, controller_training=controller_training)
+
             if isinstance(img_feats, dict):
                 img_feats = list(img_feats.values())
         else:
@@ -175,7 +186,7 @@ class CmtDetector(MVXTwoStageDetector):
 
         return img_feats
 
-    def extract_pts_feat(self, voxel_dict, points, img_feats, batch_input_metas, drop_all_lidar_layers=False):
+    def extract_pts_feat(self, voxel_dict, points, raw_imgs, batch_input_metas, controller_layers=None, drop_all_lidar_layers=False):
         if self.with_pts_backbone:
             # Keep operations in float32 to preseve voxelization accuracy
             with torch.autocast('cuda', enabled=False):
@@ -190,6 +201,10 @@ class CmtDetector(MVXTwoStageDetector):
                     voxel_features = self.pts_voxel_encoder(voxels, voxel_dict['num_points'], coors)
                 batch_size = coors[-1, 0] + 1
 
+                retained_layers = controller_layers
+                controller_training = self.controller is not None and self.training
+
+               
                 # LAYERDROP LOGIC: We have four layers per BasicBlock (hard coded by FlatFormer).
                 if self.training:
                     retained_layers = (torch.rand(len(self.pts_middle_encoder.block_list) * 4) > self.layerdrop_rate).int()
@@ -198,6 +213,9 @@ class CmtDetector(MVXTwoStageDetector):
                 else:
                     retained_layers = self.test_lidar_retained_layers
 
+
+                x = self.pts_middle_encoder(voxel_features, coors, batch_size, retained_layer_list=retained_layers, controller_training=controller_training)
+                
                 x = self.pts_backbone(x)
                 if self.with_pts_neck:
                     x = self.pts_neck(x)
@@ -230,7 +248,7 @@ class CmtDetector(MVXTwoStageDetector):
         imgs = batch_inputs_dict.get('imgs', None)
         points = batch_inputs_dict.get('points', None)
 
-        drop_all_lidar_layers, drop_all_img_layers = True, False
+        drop_all_lidar_layers, drop_all_img_layers = False, False
         if self.training and self.enable_modal_mask:
             # Modal mask by removing lidar with 50% probability during training, do not do this during inference
             if torch.rand(1).item() < 0.3:
@@ -238,15 +256,33 @@ class CmtDetector(MVXTwoStageDetector):
             elif torch.rand(1).item() < 0.2:
                 drop_all_img_layers = True
                 
-        img_feats = self.extract_img_feat(imgs, batch_input_metas, drop_all_img_layers=drop_all_img_layers)
-        pts_feats = self.extract_pts_feat(
-            voxel_dict,
-            points=points,
-            img_feats=img_feats,
-            batch_input_metas=batch_input_metas,
-            drop_all_lidar_layers=drop_all_lidar_layers)
+        
         
         # TODO: Drop the pts_feats to force the model to actually focus on image features
+        if self.controller is not None:
+            flatformer_layers = len(self.pts_middle_encoder.block_list) * 4
+            layer_allocations, predicted_categories = self.controller(voxel_dict, imgs, flatformer_layers)
+            retained_layers_lidar = layer_allocations[:, :flatformer_layers]
+            retained_layers_img = layer_allocations[:, flatformer_layers:]
+            # Lowkey this should be pretty obvious what is happening since the corruption is so severe, I think the model should be able to learn this on its own
+            pts_feats = self.extract_pts_feat(
+                voxel_dict,
+                points=points,
+                raw_imgs = imgs,
+                batch_input_metas=batch_input_metas,
+                controller_layers=retained_layers_lidar,
+            )
+            # Remaining layers are image
+            img_feats = self.extract_img_feat(imgs, batch_input_metas, controller_selected_layers=retained_layers_img)
+        else:
+            img_feats = self.extract_img_feat(imgs, batch_input_metas, drop_all_img_layers=drop_all_img_layers)
+            pts_feats = self.extract_pts_feat(
+                voxel_dict,
+                points=points,
+                img_feats=img_feats,
+                batch_input_metas=batch_input_metas,
+                drop_all_lidar_layers=drop_all_lidar_layers)
+        
 
         
         # Remove lidar during testing, see img mAP

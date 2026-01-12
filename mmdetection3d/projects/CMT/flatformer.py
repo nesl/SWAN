@@ -106,6 +106,7 @@ class BasicLayer(nn.Module):
 
 
     def forward(self, src, pe):
+        import pdb; pdb.set_trace()
         src = self.norm1(src + self.attn(src, pe))
         src = self.norm2(src + self.fc2(self.act(self.fc1(src))))
 
@@ -132,16 +133,22 @@ class BasicBlock(nn.Module):
             )
             self.block.append(layer)
     # TODO: We may have to update this structure slightly when moving towards TensorRT and edge devices 
-    def forward(self, x: torch.Tensor, pe: torch.Tensor, mappings: Dict[str, Any], retained_layer_list=None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, pe: torch.Tensor, mappings: Dict[str, Any], retained_layer_list=None, controller_training=False) -> torch.Tensor:
         # Run through the four basic layers while performing shift and sort operations
         for k, name in enumerate(["x", "x_shift", "y", "y_shift"]):
-            # If retained_layer_list is exists and is 0, do not run that particular layer
-            if retained_layer_list is not None and not retained_layer_list[k]:
-                continue
-            indices = mappings[name]
-            x[indices] = self.block[k](x[indices][mappings["flat2win"]], pe[indices][mappings["flat2win"]])[
-                mappings["win2flat"]
-            ]
+            # If retained_layer_list does not exist OR is 1 OR controller training is active, run that particular layer
+            # During normal layerdrop training and all inference retained_layer_list is 1D tensor
+            if controller_training or retained_layer_list is None or retained_layer_list[k]:
+                indices = mappings[name]
+                x_new = self.block[k](x[indices][mappings["flat2win"]], pe[indices][mappings["flat2win"]])[
+                    mappings["win2flat"]
+                ]
+
+                # If we are doing controller training, then retained_layer_list is going to be B x 12 as it is lidar
+                if controller_training:
+                    x[indices] = x[indices] * (1 - retained_layer_list[:, k]) + x_new * retained_layer_list[:, k]
+                else:
+                    x[indices] = x_new
 
         return x
 
@@ -196,6 +203,7 @@ class FlattenedWindowMapping(nn.Module):
 
         _, num_per_batch = torch.unique(coords[:, 0], sorted=False, return_counts=True)
         batch_start_indices = F.pad(torch.cumsum(num_per_batch, dim=0), (1, 0))
+        import pdb; pdb.set_trace()
         num_per_batch_p = (
             torch.div(
                 batch_start_indices[1:] - batch_start_indices[:-1] + self.group_size - 1,
@@ -333,17 +341,18 @@ class FlatFormer(nn.Module):
         self.output_shape = output_shape
 
     # Added LayerDropping Logic
-    def forward(self, x, coords, batch_size, retained_layer_list=None):
+    def forward(self, x, coords, batch_size, retained_layer_list=None, controller_training=False):
         pe = self.embedding(coords, x.dtype)
         mappings = self.mapping(coords, batch_size)
 
         for i, block in enumerate(self.block_list):
             # Chunk the list four at a time for each block
+            stage_layer_list = None
             if retained_layer_list is not None:
-                stage_layer_list = retained_layer_list[i*4:(i+1) * 4]
-                x = block(x, pe, mappings, stage_layer_list)
-            else:
-                x = block(x, pe, mappings)
+                stage_layer_list = retained_layer_list[:, i*4:(i+1) * 4]
+
+            x = block(x, pe, mappings, stage_layer_list, controller_training)
+
 
         x = self.recover_bev(x, coords, batch_size)
 

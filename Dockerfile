@@ -21,5 +21,3 @@ RUN pip install timm
 RUN pip install torch-scatter -f https://data.pyg.org/whl/torch-2.1.0+cu121.html
 RUN pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.2.post1/flash_attn-2.7.2.post1+cu12torch2.1cxx11abiFALSE-cp310-cp310-linux_x86_64.whl
 ENV PYTHONPATH="/workspace/mmdetection3d:${PYTHONPATH}"
-
-RUN bash -c 'mv libraries_replace/swin.py /opt/conda/lib/python3.10/site-packages/mmdet/models/backbones/swin.py'

@@ -1,7 +1,7 @@
 # Installation Steps
 
 1. Clone the github repo. We will be mounting this repo into our docker container to ensure modifications in the Docker are saved onto local disk
-2. Modify the docker container to build the correct mmcv for your compute version. Build the docker container: `docker build -t mmdet:latest`
+2. Modify the docker container to build the correct mmcv for your compute version. Build the docker container: `docker build -t mmdet:latest .`
 3. Run the docker container in silent mode: 
 ```
 docker run -d --gpus all --shm-size=150gb \
@@ -15,6 +15,8 @@ docker run -d --gpus all --shm-size=150gb \
 Be sure to modify the paths to point to your cloned repo and also the data directory. Modify the RAM allocation as fit under --shm-size
 
 4. Attach to the running docker container
+
+5. After attaching, run `bash setup_env.sh` to set correct pythonpath and modify libraries
 
 # Pretraining Steps
 1. Preprocess the data: `python tools/create_data.py nuscenes --root-path ./data/nuscenes --out-dir ./data/nuscenes --extra-tag nuscenes`

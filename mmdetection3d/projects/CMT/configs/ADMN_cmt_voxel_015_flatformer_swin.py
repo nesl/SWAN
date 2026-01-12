@@ -1,4 +1,11 @@
-# See cmt_swin_layerdrop.py, similar except different LR, training cycle, and no layerdrop
+'''
+Trains everything from scratch, jointly trains both the lidar and image backbones
+I have not had much success using this yet, it seems like my modalities will underfit rather severely
+May be better to start from one modality's checkpoint, similarly to BEVFusion (from pretrained img + lidar)
+or the original CMT paper that begin from pretrained image checkpoints
+'''
+
+
 
 _base_ = ['../../../configs/_base_/default_runtime.py']
 custom_imports = dict(
@@ -43,10 +50,78 @@ input_modality = dict(use_lidar=True, use_camera=True)
 
 backend_args = None
 
+
 model = dict(
     type='CmtDetector',
+    use_grid_mask=True,
+    enable_modal_mask=True,
+    controller = dict(
+        type='ConvLayerController',
+        hard_voxelizer=dict(
+            type='HardSimpleVFE',
+            num_features=5,
+        )
+        # Use defaults for now
+    ),
     data_preprocessor=dict(
-        type='Det3DDataPreprocessor',
+        type='DualVoxelizationPreprocessor',
+        voxel=True,
+        voxel_type='dynamic',  # <--- here
+        voxel_layer=dict(
+            max_num_points=-1,
+            point_cloud_range=point_cloud_range,
+            voxel_size=voxel_size,
+            max_voxels=(-1, -1)
+        ),
+        controller_voxel_type='hard',
+        controller_voxel_layer=dict(
+            max_num_points=20,
+            point_cloud_range = point_cloud_range,
+            voxel_size=[2, 2, 8], # Use two meter large voxels, feature map is now about (54, 54),
+            max_voxels=(30000, 40000) # Train, test?
+        )
+    ),
+    pts_voxel_encoder=dict(
+        type='DynamicVFE_New',
+        in_channels=5,
+        feat_channels=[64, 128],
+        with_distance=False,
+        voxel_size=voxel_size,
+        with_cluster_center=True,
+        with_voxel_center=True,
+        return_gt_points=True,
+        point_cloud_range=point_cloud_range,
+        norm_cfg=dict(type='naiveSyncBN1d', eps=1e-3, momentum=0.01)
+    ),
+    pts_middle_encoder=dict(
+        type='FlatFormer',
+        in_channels=128,
+        num_heads=8,
+        num_blocks=2,
+        activation="gelu",
+        window_shape=window_shape,
+        sparse_shape=sparse_shape,
+        output_shape=[sparse_shape[0], sparse_shape[1]],
+        pos_temperature=10000,
+        normalize_pos=False,
+        group_size=64,
+    ),
+    
+    pts_backbone=dict(
+        type='SECOND',
+        in_channels=128,
+        out_channels=[64, 128],
+        layer_nums=[3, 3],
+        layer_strides=[2, 2],
+        conv_cfg=dict(type='Conv2d', bias=False),
+        norm_cfg=dict(type='naiveSyncBN2d', eps=1e-3, momentum=0.01),
+    ),
+    pts_neck=dict(
+        type='SECONDFPN',
+        norm_cfg=dict(type='naiveSyncBN2d', eps=1e-3, momentum=0.01),
+        in_channels=[64, 128],
+        upsample_strides=[0.5, 1],
+        out_channels=[256, 256]
     ),
    
 
@@ -75,16 +150,6 @@ model = dict(
             'https://github.com/SwinTransformer/storage/releases/download/v1.0.0/swin_tiny_patch4_window7_224.pth'  # noqa: E501
         )
     ),
-    # LSSFPN is not a good fit for CMT
-    # img_neck=dict(
-    #     type='GeneralizedLSSFPN',
-    #     in_channels=[192, 384, 768],
-    #     out_channels=256,
-    #     start_level=0,
-    #     num_outs=3,
-    #     norm_cfg=dict(type='BN2d', requires_grad=True),
-    #     act_cfg=dict(type='ReLU', inplace=True),
-    #     upsample_cfg=dict(mode='bilinear', align_corners=False)),
 
     img_neck=dict(
         type='CPFPN',
@@ -93,7 +158,7 @@ model = dict(
         num_outs=2),
 
     pts_bbox_head=dict(
-        type='CmtImageHead',
+        type='CmtHead',
         in_channels=512,
         hidden_dim=256,
         downsample_scale=out_size_factor,
@@ -116,7 +181,7 @@ model = dict(
         separate_head=dict(
             type='SeparateTaskHead', init_bias=-2.19, final_kernel=1),
         transformer=dict(
-            type='CmtImageTransformer',
+            type='CmtTransformer',
             decoder=dict(
                 type='PETRTransformerDecoder',
                 return_intermediate=True,
@@ -189,6 +254,42 @@ model = dict(
 )
 
 
+db_sampler = dict(
+    data_root=data_root,
+    info_path=data_root + 'nuscenes_dbinfos_train.new.pkl',
+    rate=1.0,
+    prepare=dict(
+        filter_by_difficulty=[-1],
+        filter_by_min_points=dict(
+            car=5,
+            truck=5,
+            bus=5,
+            trailer=5,
+            construction_vehicle=5,
+            traffic_cone=5,
+            barrier=5,
+            motorcycle=5,
+            bicycle=5,
+            pedestrian=5)),
+    classes=class_names,
+    sample_groups=dict(
+        car=2,
+        truck=3,
+        construction_vehicle=7,
+        bus=4,
+        trailer=6,
+        barrier=2,
+        motorcycle=6,
+        bicycle=6,
+        pedestrian=2,
+        traffic_cone=2),
+    points_loader=dict(
+        type='LoadPointsFromFile',
+        coord_type='LIDAR',
+        load_dim=5,
+        use_dim=[0, 1, 2, 3, 4],
+        backend_args=backend_args))
+
 
 train_pipeline = [
     dict(
@@ -214,6 +315,10 @@ train_pipeline = [
         sync_2d=False,
         flip_ratio_bev_horizontal=0.5,
         flip_ratio_bev_vertical=0.5),
+    dict(
+        type='ObjectSample',
+        db_sampler= db_sampler
+    ),
     dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
     dict(type='ObjectRangeFilter', point_cloud_range=point_cloud_range),
     dict(type='ObjectNameFilter', classes=class_names),
@@ -261,6 +366,7 @@ test_pipeline = [
     dict(type='ResizeCropFlipImage', data_aug_conf=ida_aug_conf, training=False),
     
     dict(type='NormalizeMultiviewImage', **img_norm_cfg),
+    dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
     
     dict(type='PadMultiViewImage', size_divisor=32),
     
@@ -278,7 +384,7 @@ test_pipeline = [
 ]
 
 train_dataloader = dict(
-    batch_size=4,
+    batch_size=2,
     num_workers=16,
     persistent_workers=True,
     sampler=dict(type='DefaultSampler', shuffle=True),
@@ -329,7 +435,7 @@ test_evaluator = val_evaluator
 param_scheduler = [
     dict(
         type='OneCycleLR',
-        total_steps=50,            # Total epochs
+        total_steps=20,            # Total epochs
         by_epoch=True,             # It's an epoch-based scheduler
         eta_max=0.0001,            # Max LR
         pct_start=0.1,             # Max at epoch 8
@@ -340,7 +446,7 @@ param_scheduler = [
 ]
 
 # runtime settings
-train_cfg = dict(by_epoch=True, max_epochs=50, val_interval=1)
+train_cfg = dict(by_epoch=True, max_epochs=20, val_interval=1)
 val_cfg = dict()
 test_cfg = dict()
 
@@ -354,10 +460,15 @@ log_processor = dict(window_size=50)
 
 default_hooks = dict(
     logger=dict(type='LoggerHook', interval=50),
-    checkpoint=dict(type='CheckpointHook', interval=5))
+    checkpoint=dict(type='CheckpointHook', interval=1))
+
+custom_hooks = [
+    dict(type='DisableObjectSampleHook', disable_after_epoch=15),
+]
 
 randomness = dict(
     seed=100,
     diff_rank_seed=False,
     # deterministic=True
 )
+
