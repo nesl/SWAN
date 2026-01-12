@@ -32,6 +32,8 @@ class CmtDetector(MVXTwoStageDetector):
                  use_grid_mask=False,
                  enable_modal_mask=False,
                  layerdrop_rate = 0.0,
+                 test_img_retained_layers = None,
+                 test_lidar_retained_layers = None,
                  **kwargs):
         super(CmtDetector, self).__init__(**kwargs)
         self.enable_modal_mask = enable_modal_mask
@@ -39,12 +41,16 @@ class CmtDetector(MVXTwoStageDetector):
         # GridMask will mask the input image to reduce overfitting to the images
         self.grid_mask = GridMask(True, True, rotate=1, offset=False, ratio=0.5, mode=1, prob=0.7)
         self.layerdrop_rate = layerdrop_rate
-        
+        if self.with_img_backbone:
+            self.test_img_retained_layers = test_img_retained_layers if test_img_retained_layers is not None else torch.ones(self.img_backbone.total_depth)
+        if self.with_pts_backbone:
+            self.test_lidar_retained_layers = test_lidar_retained_layers if test_lidar_retained_layers is not None else torch.ones(len(self.pts_middle_encoder.block_list) * 4)
+
     def init_weights(self):
         """Initialize model weights."""
         super(CmtDetector, self).init_weights()
 
-    def extract_img_feat(self, img, img_metas):
+    def extract_img_feat(self, img, img_metas, drop_all_img_layers=False):
         """Extract features of images."""
         if self.with_img_backbone and img is not None:
             input_shape = img.shape[-2:]
@@ -63,13 +69,16 @@ class CmtDetector(MVXTwoStageDetector):
             
             # LAYERDROPPING LOGIC: Generate random mask during training according to the layerdrop rate
             # 0 indicates a layer is DROPPED, 1 means the layer is RETAINED
+            
             if self.training:
                 retained_layers = (torch.rand(self.img_backbone.total_depth) > self.layerdrop_rate).int()
+                if drop_all_img_layers:
+                    retained_layers = torch.zeros_like(retained_layers)
             # Currently we just use all layers during inference
             # TODO Change this to accept a list of layers (or some instance variable) to test different layer allocations during inference
             else:
-                retained_layers = torch.ones(self.img_backbone.total_depth)
-            
+                retained_layers = self.test_img_retained_layers
+                
             img_feats = self.img_backbone(img.float(), retained_layers)
             if isinstance(img_feats, dict):
                 img_feats = list(img_feats.values())
@@ -82,7 +91,7 @@ class CmtDetector(MVXTwoStageDetector):
 
         return img_feats
 
-    def extract_pts_feat(self, voxel_dict, points, img_feats, batch_input_metas):
+    def extract_pts_feat(self, voxel_dict, points, img_feats, batch_input_metas, drop_all_lidar_layers=False):
         if self.with_pts_backbone:
             # Keep operations in float32 to preseve voxelization accuracy
             with torch.autocast('cuda', enabled=False):
@@ -100,8 +109,10 @@ class CmtDetector(MVXTwoStageDetector):
                 # LAYERDROP LOGIC: We have four layers per BasicBlock (hard coded by FlatFormer).
                 if self.training:
                     retained_layers = (torch.rand(len(self.pts_middle_encoder.block_list) * 4) > self.layerdrop_rate).int()
+                    if drop_all_lidar_layers:
+                        retained_layers = torch.zeros_like(retained_layers)
                 else:
-                    retained_layers = torch.ones(len(self.pts_middle_encoder.block_list) * 4)
+                    retained_layers = self.test_lidar_retained_layers
 
                 # Middle encoder is the FlatFormer model
                 x = self.pts_middle_encoder(voxel_features, coors, batch_size, retained_layers)
@@ -136,20 +147,29 @@ class CmtDetector(MVXTwoStageDetector):
         voxel_dict = batch_inputs_dict.get('voxels', None)
         imgs = batch_inputs_dict.get('imgs', None)
         points = batch_inputs_dict.get('points', None)
-        img_feats = self.extract_img_feat(imgs, batch_input_metas)
+
+        drop_all_lidar_layers, drop_all_img_layers = True, False
+        if self.training and self.enable_modal_mask:
+            # Modal mask by removing lidar with 50% probability during training, do not do this during inference
+            if torch.rand(1).item() < 0.3:
+                drop_all_lidar_layers = True
+            elif torch.rand(1).item() < 0.2:
+                drop_all_img_layers = True
+                
+        img_feats = self.extract_img_feat(imgs, batch_input_metas, drop_all_img_layers=drop_all_img_layers)
         pts_feats = self.extract_pts_feat(
             voxel_dict,
             points=points,
             img_feats=img_feats,
-            batch_input_metas=batch_input_metas)
+            batch_input_metas=batch_input_metas,
+            drop_all_lidar_layers=drop_all_lidar_layers)
+        
+        # TODO: Drop the pts_feats to force the model to actually focus on image features
 
-        # TODO: Currently modal masking is enabled only for masking out lidar since we train lidar only model at the start
-        # Change this later to modal mask both modalities
-        if self.training and self.enable_modal_mask:
-            # Modal mask by removing lidar with 50% probability during training, do not do this during inference
-            modal_mask = (torch.rand(pts_feats[0].shape[0]) > 0.5).int()
-            modal_mask = modal_mask.to(pts_feats[0].device)
-            pts_feats = [item * modal_mask[:, None, None, None] for item in pts_feats]
+        
+        # Remove lidar during testing, see img mAP
+        # if not self.training:
+        #     pts_feats = [item * 0.0 for item in pts_feats]
 
         return (img_feats, pts_feats)
 
