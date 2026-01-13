@@ -1,3 +1,0 @@
-[submodule "mmdetection3d/projects/MultiCorrupt"]
-	path = mmdetection3d/projects/MultiCorrupt
-	url = https://github.com/ika-rwth-aachen/MultiCorrupt.git
