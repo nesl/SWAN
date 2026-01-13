@@ -10,7 +10,7 @@ custom_imports = dict(
 )
 
 # -------------------model--------------------
-img_size = (256, 704)
+img_size = (320, 800)
 masking_ratio_img = 0.75
 
 model = dict(
@@ -48,7 +48,7 @@ model = dict(
         embed_dim=96,
         depths=[2, 2, 18, 2],
         mlp_ratio=4,
-        num_patches=(8, 22), # Derived from img_size (256/32, 704/32) -> (8, 22)
+        num_patches=(10, 25), # Derived from img_size (320/32, 800/32) -> (10, 25)
         decoder_embed_dim=768,
         decoder_depth=12,
         decoder_num_heads=16,

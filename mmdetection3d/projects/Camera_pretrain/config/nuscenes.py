@@ -57,7 +57,7 @@ train_pipeline = [
         use_dim=[0, 1, 2, 3, 4]),
     dict(type='LoadAnnotations3D', with_bbox_3d=True, with_label_3d=True),
     dict(type='ImageAug3D_UniM2AE', 
-         final_dim=[256, 704],
+         final_dim=[320, 800],
          resize_lim=[0.44, 0.61],
          bot_pct_lim=[0.0, 0.0],
          rand_flip=True,
@@ -112,7 +112,7 @@ val_pipeline = [
     dict(type='LoadAnnotations3D', with_bbox_3d=True, with_label_3d=True),
     # Originally it is ImageAug_UniM2AE, but it doesnt exist 
     dict(type='ImageAug3D_UniM2AE', 
-         final_dim=[256, 704],
+         final_dim=[320, 800],
          resize_lim=[0.48, 0.48],
          bot_pct_lim=[0.0, 0.0],
          rand_flip=False,

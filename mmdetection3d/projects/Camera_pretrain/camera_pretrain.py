@@ -12,36 +12,47 @@ from mmdet3d.structures import bbox3d2result
 import numpy as np
 
 
-
-def show_image(image, title=''):
-    imagenet_mean = np.array([0.485, 0.456, 0.406])
-    imagenet_std = np.array([0.229, 0.224, 0.225])
-    
-    # image is [H, W, 3]
-    assert image.shape[2] == 3
-    plt.imshow(torch.clip((image * imagenet_std + imagenet_mean) * 255, 0, 255).int())
+def show_image(img, title):
+    """Helper function to display image with title"""
+    img = np.clip(img.numpy(), 0, 1)
+    plt.imshow(img)
     plt.title(title, fontsize=16)
     plt.axis('off')
-    return
+
+
+
+
 
 
 def vis_image(ori_img, pred_img, mask, model, out_dir, sample_idx):
     from pathlib import Path
     Path(f'{out_dir}/cam').mkdir(parents=True, exist_ok=True)
-    
-    ori_img = model.camera_decoder.patchify(ori_img)
-    mean = ori_img.mean(dim=-1, keepdim=True)
-    var = ori_img.var(dim=-1, keepdim=True)
-    ori_img = model.camera_decoder.unpatchify(ori_img)
+
+    # Use img_head instead of camera_decoder (consistent naming)
+    decoder = model.img_head
+
+    ori_img_patches = decoder.patchify(ori_img)
+    mean = ori_img_patches.mean(dim=-1, keepdim=True)
+    var = ori_img_patches.var(dim=-1, keepdim=True)
+    ori_img = decoder.unpatchify(ori_img_patches)
     x = torch.einsum('nchw->nhwc', ori_img).detach().cpu()
 
     pred_img = pred_img * (var + 1.e-6)**.5 + mean
-    y = model.camera_decoder.unpatchify(pred_img)
+    y = decoder.unpatchify(pred_img)
     y = torch.einsum('nchw->nhwc', y).detach().cpu()
 
+    # Upsample mask to match the new patch resolution
+    # mask is [B, L_coarse] where L_coarse = grid_size[0] * grid_size[1]
+    # We need to expand it to [B, L_fine] where L_fine = L_coarse * upsampling_ratio^2
     mask = mask.detach()
-    mask = mask.unsqueeze(-1).repeat(1, 1, model.camera_decoder.final_patch_size**2 *3)
-    mask = model.camera_decoder.unpatchify(mask)
+    if decoder.upsampling_ratio > 1:
+        # Each coarse patch maps to upsampling_ratio^2 fine patches
+        B = mask.shape[0]
+        mask = mask.unsqueeze(-1).repeat(1, 1, decoder.upsampling_ratio**2)
+        mask = mask.reshape(B, -1)  # [B, L_fine]
+
+    mask = mask.unsqueeze(-1).repeat(1, 1, decoder.original_patch_size**2 * 3)
+    mask = decoder.unpatchify(mask)
     mask = torch.einsum('nchw->nhwc', mask).detach().cpu()
 
     im_masked = x * (1 - mask)

@@ -757,8 +757,33 @@ class SSTInputLayerV2Masked(SSTInputLayerV2):
     def forward(self, voxel_feats, voxel_coors, low_level_point_feature, point_coors, batch_size=None):
         if batch_size is None:
             batch_size = int(voxel_coors[:, 0].max().item()) + 1
-            
+
         device = voxel_feats.device
+
+        # --- SAFETY: Validate input voxel coordinates ---
+        # Filter out voxels with coordinates outside valid sparse_shape
+        valid_voxel_mask = (
+            (voxel_coors[:, 0] >= 0) & (voxel_coors[:, 0] < batch_size) &
+            (voxel_coors[:, 1] >= 0) & (voxel_coors[:, 1] < self.vz) &
+            (voxel_coors[:, 2] >= 0) & (voxel_coors[:, 2] < self.vy) &
+            (voxel_coors[:, 3] >= 0) & (voxel_coors[:, 3] < self.vx)
+        )
+
+        if not valid_voxel_mask.all():
+            voxel_feats = voxel_feats[valid_voxel_mask]
+            voxel_coors = voxel_coors[valid_voxel_mask]
+
+        # Also validate point coordinates
+        valid_point_mask = (
+            (point_coors[:, 0] >= 0) & (point_coors[:, 0] < batch_size) &
+            (point_coors[:, 1] >= 0) & (point_coors[:, 1] < self.vz) &
+            (point_coors[:, 2] >= 0) & (point_coors[:, 2] < self.vy) &
+            (point_coors[:, 3] >= 0) & (point_coors[:, 3] < self.vx)
+        )
+
+        if not valid_point_mask.all():
+            low_level_point_feature = low_level_point_feature[valid_point_mask]
+            point_coors = point_coors[valid_point_mask]
 
         gt_dict, fake_voxel_coors = self.get_ground_truth(
             batch_size, device, low_level_point_feature, point_coors, voxel_coors, voxel_feats)
@@ -781,17 +806,31 @@ class SSTInputLayerV2Masked(SSTInputLayerV2):
 
         # Add fake voxels
         if self.use_fake_voxels and fake_voxel_coors is not None:
+            # --- SAFETY: Validate fake voxel coordinates before concatenation ---
+            valid_fake_mask = (
+                (fake_voxel_coors[:, 1] >= 0) & (fake_voxel_coors[:, 1] < self.vz) &
+                (fake_voxel_coors[:, 2] >= 0) & (fake_voxel_coors[:, 2] < self.vy) &
+                (fake_voxel_coors[:, 3] >= 0) & (fake_voxel_coors[:, 3] < self.vx)
+            )
+
+            if not valid_fake_mask.all():
+                fake_voxel_coors = fake_voxel_coors[valid_fake_mask]
+
             n_fake_voxels = len(fake_voxel_coors)
-            fake_voxel_idx = torch.arange(n_fake_voxels, device=device) + len(voxel_coors)
-            
-            voxel_coors = torch.cat([voxel_coors, fake_voxel_coors], dim=0)
-            
-            fake_voxel_feats = torch.zeros(
-                (n_fake_voxels, voxel_feats.shape[1]), device=device, dtype=voxel_feats.dtype)
-            voxel_feats = torch.cat([voxel_feats, fake_voxel_feats], dim=0)
-            
-            mask_ext = torch.zeros(n_fake_voxels, device=device, dtype=torch.bool)
-            mask = torch.cat([mask, mask_ext])
+
+            if n_fake_voxels > 0:
+                fake_voxel_idx = torch.arange(n_fake_voxels, device=device) + len(voxel_coors)
+
+                voxel_coors = torch.cat([voxel_coors, fake_voxel_coors], dim=0)
+
+                fake_voxel_feats = torch.zeros(
+                    (n_fake_voxels, voxel_feats.shape[1]), device=device, dtype=voxel_feats.dtype)
+                voxel_feats = torch.cat([voxel_feats, fake_voxel_feats], dim=0)
+
+                mask_ext = torch.zeros(n_fake_voxels, device=device, dtype=torch.bool)
+                mask = torch.cat([mask, mask_ext])
+            else:
+                n_fake_voxels = 0
         else:
             n_fake_voxels = 0
 
@@ -814,8 +853,8 @@ class SSTInputLayerV2Masked(SSTInputLayerV2):
         voxel_info_decoder["n_masked"] = n_masked_voxels
         voxel_info_decoder["unmasked_idx"] = unmasked_idx
         voxel_info_decoder["masked_idx"] = masked_idx
-        
-        if self.use_fake_voxels and fake_voxel_coors is not None:
+
+        if self.use_fake_voxels and n_fake_voxels > 0:
             voxel_info_decoder["fake_voxel_idx"] = fake_voxel_idx
             voxel_info_decoder["n_fake"] = n_fake_voxels
 
@@ -827,8 +866,8 @@ class SSTInputLayerV2Masked(SSTInputLayerV2):
         voxel_info_decoder["dec2unmasked_idx"] = dec2unmasked_idx
         voxel_info_decoder["dec2masked_idx"] = dec2masked_idx
         voxel_info_decoder["dec2enc_idx"] = dec2enc_idx
-        
-        if self.use_fake_voxels and fake_voxel_coors is not None:
+
+        if self.use_fake_voxels and n_fake_voxels > 0:
             dec2fake_idx = dec2dec_input_idx[fake_voxel_idx]
             voxel_info_decoder["dec2fake_idx"] = dec2fake_idx
 
@@ -1247,9 +1286,34 @@ class DynamicVFE_New(nn.Module):
             # If it's a tensor, convert to int. If it's already an int, this is safe.
             batch_size = int(batch_size)
             #print(f'Using provided batch_size: {batch_size}')
-        # Create a tensor for MMCV Scatter: [batch_idx, x, y, z] 
+        # Create a tensor for MMCV Scatter: [batch_idx, x, y, z]
         # MMCV DynamicScatter expects floats if calculating voxels internally
         spatial_coors = coors[:, [0, 3, 2, 1]].contiguous().long()
+
+        # --- SAFETY: Validate coordinates before scatter operations ---
+        # Calculate grid dimensions
+        canvas_z = round((self.point_cloud_range[5] - self.point_cloud_range[2]) / self.vz)
+        canvas_y = round((self.point_cloud_range[4] - self.point_cloud_range[1]) / self.vy)
+        canvas_x = round((self.point_cloud_range[3] - self.point_cloud_range[0]) / self.vx)
+
+        # Filter out points with coordinates outside valid range
+        valid_mask = (
+            (spatial_coors[:, 0] >= 0) & (spatial_coors[:, 0] < batch_size) &
+            (spatial_coors[:, 1] >= 0) & (spatial_coors[:, 1] < canvas_x) &
+            (spatial_coors[:, 2] >= 0) & (spatial_coors[:, 2] < canvas_y) &
+            (spatial_coors[:, 3] >= 0) & (spatial_coors[:, 3] < canvas_z)
+        )
+
+        if not valid_mask.all():
+            # Filter invalid points
+            features = features[valid_mask]
+            spatial_coors = spatial_coors[valid_mask]
+            coors = coors[valid_mask]
+            if features.shape[0] == 0:
+                # Emergency fallback: return dummy outputs if all points filtered
+                dummy_feats = features.new_zeros((1, self.vfe_layers[-1].linear.out_features))
+                dummy_coors = coors.new_zeros((1, 4), dtype=torch.long)
+                return dummy_feats, dummy_coors
 
         features_ls = [features]
         # origin_point_coors = features[:, :3]

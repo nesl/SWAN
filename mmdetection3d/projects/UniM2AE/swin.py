@@ -994,6 +994,19 @@ class MAESwinDecoder(nn.Module):
         self.decoder_norm = norm_layer(decoder_embed_dim)
         self.decoder_pred = nn.Linear(decoder_embed_dim, self.final_patch_size**2 * in_chans, bias=True)
 
+        # Add upsampling network to reconstruct at original patch resolution
+        self.original_patch_size = patch_size  # Store original patch size (e.g., 4)
+        self.upsampling_ratio = self.final_patch_size // self.original_patch_size  # e.g., 32 // 4 = 8
+
+        if self.upsampling_ratio > 1:
+            # Build upsampling layers: final_patch_size -> original_patch_size
+            self.upsample_net = self._build_upsample_network(
+                in_chans=in_chans,
+                hidden_dim=decoder_embed_dim // 4
+            )
+        else:
+            self.upsample_net = None
+
         self.cross_modality_module = None 
         if decoder is not None:
             self.cross_modality_module = build_transformer_layer_sequence(decoder)
@@ -1019,13 +1032,45 @@ class MAESwinDecoder(nn.Module):
             if m.bias is not None: nn.init.constant_(m.bias, 0)
         elif isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0); nn.init.constant_(m.weight, 1.0)
+
+    def _build_upsample_network(self, in_chans=3, hidden_dim=128):
+        """
+        Build network to upsample from final_patch_size to original_patch_size
+        E.g., 32x32 patches -> 4x4 patches (8x upsampling)
+        """
+        layers = []
+        current_size = self.final_patch_size
+        target_size = self.original_patch_size
+
+        # Reshape from [B, L, final_patch_size^2 * 3] to [B*L, 3, final_patch_size, final_patch_size]
+        # Then progressively upsample
+
+        # First conv to expand channels
+        layers.append(nn.Conv2d(in_chans, hidden_dim, kernel_size=3, padding=1))
+        layers.append(nn.GELU())
+
+        # Upsample stages (e.g., 32 -> 16 -> 8 -> 4)
+        while current_size > target_size:
+            layers.append(nn.ConvTranspose2d(
+                hidden_dim, hidden_dim,
+                kernel_size=2, stride=2  # 2x upsampling each time
+            ))
+            layers.append(nn.GELU())
+            current_size = current_size // 2
+
+        # Final layer to get back to 3 channels
+        layers.append(nn.Conv2d(hidden_dim, in_chans, kernel_size=3, padding=1))
+
+        return nn.Sequential(*layers)
             
     def patchify(self, imgs, patch_size=None):
         """
         imgs: (N, 3, H, W)
         x: (N, L, patch_size**2 *3)
+
+        Now uses original_patch_size by default for finer-grained reconstruction targets.
         """
-        p = patch_size or self.final_patch_size
+        p = patch_size or self.original_patch_size  # Use original patch size (e.g., 4, not 32)
         assert imgs.shape[2] % p == 0 and imgs.shape[3] % p == 0
 
         h = imgs.shape[2] // p
@@ -1039,12 +1084,18 @@ class MAESwinDecoder(nn.Module):
         """
         x: (N, L, patch_size**2 *3)
         imgs: (N, 3, H, W)
+
+        Now uses original_patch_size by default for finer-grained reconstruction.
+        The grid size is adjusted based on upsampling ratio.
         """
-        p = patch_size or self.final_patch_size
-        h = self.grid_size[0]
-        w = self.grid_size[1]
-        assert h * w == x.shape[1]
-        
+        p = patch_size or self.original_patch_size  # Use original patch size (e.g., 4, not 32)
+
+        # Adjust grid size based on upsampling
+        # E.g., if upsampling_ratio=8, grid goes from (10, 25) to (80, 200)
+        h = self.grid_size[0] * self.upsampling_ratio
+        w = self.grid_size[1] * self.upsampling_ratio
+        assert h * w == x.shape[1], f"Expected {h * w} patches but got {x.shape[1]}"
+
         x = x.reshape(shape=(x.shape[0], h, w, p, p, 3))
         x = torch.einsum('nhwpqc->nchpwq', x)
         imgs = x.reshape(shape=(x.shape[0], 3, h * p, w * p))
@@ -1088,7 +1139,23 @@ class MAESwinDecoder(nn.Module):
 
         for blk in self.decoder_blocks: x = blk(x)
         x = self.decoder_norm(x)
-        return self.decoder_pred(x)
+        x = self.decoder_pred(x)  # [B, L, final_patch_size^2 * 3]
+
+        # Apply upsampling if needed to get back to original patch resolution
+        if self.upsample_net is not None:
+            B, L, _ = x.shape
+            # Reshape to image format: [B*L, 3, final_patch_size, final_patch_size]
+            x = x.reshape(B * L, self.final_patch_size, self.final_patch_size, 3)
+            x = x.permute(0, 3, 1, 2)  # [B*L, 3, final_patch_size, final_patch_size]
+
+            # Upsample: [B*L, 3, final_patch_size, final_patch_size] -> [B*L, 3, original_patch_size, original_patch_size]
+            x = self.upsample_net(x)
+
+            # Reshape back to patch format: [B, L, original_patch_size^2 * 3]
+            x = x.permute(0, 2, 3, 1)  # [B*L, original_patch_size, original_patch_size, 3]
+            x = x.reshape(B, L, self.original_patch_size**2 * 3)
+
+        return x
     
     def forward_loss(self, imgs, pred, mask):
         """

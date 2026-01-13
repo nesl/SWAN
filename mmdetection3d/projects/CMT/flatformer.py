@@ -433,10 +433,20 @@ class FlatFormer(nn.Module):
             # Get corresponding voxel features
             voxels = voxel_feat[batch_mask, :][valid_mask]  # [n, c]
             voxels = voxels.t()  # [c, n]
-            
-            # Use scatter_ instead of direct indexing to handle duplicates safely
-            # This also prevents issues if there are duplicate indices
-            canvas.scatter_(1, indices.unsqueeze(0).expand(feat_dim, -1), voxels)
+
+            # Handle duplicate indices explicitly by aggregating before scatter
+            # This ensures differentiability and proper gradient flow during backward
+            unique_indices, inverse_indices = torch.unique(indices, return_inverse=True)
+
+            # Aggregate voxels with same index using mean
+            aggregated_voxels = torch.zeros(feat_dim, unique_indices.size(0),
+                                           dtype=voxels.dtype, device=voxels.device)
+            for i in range(unique_indices.size(0)):
+                mask = inverse_indices == i
+                aggregated_voxels[:, i] = voxels[:, mask].mean(dim=1)
+
+            # Now scatter with unique indices only (no duplicates, fully differentiable)
+            canvas.scatter_(1, unique_indices.unsqueeze(0).expand(feat_dim, -1), aggregated_voxels)
             
             batch_canvas.append(canvas)
 
