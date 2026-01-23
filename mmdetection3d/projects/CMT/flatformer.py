@@ -21,6 +21,65 @@ def _create_cu_seqlens(batch_size: int, num_tokens: int, device: torch.device) -
         device=device,
     )
 
+class OrdinaryMultiHeadAttn(nn.MultiheadAttention):
+    def forward(
+        self, 
+        q: torch.Tensor, 
+        k: torch.Tensor, 
+        v: torch.Tensor
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        # 1. Setup dimensions
+        batch_size, num_tokens, embed_dim = q.shape
+        num_heads = self.num_heads
+        head_dim = embed_dim // num_heads
+        origin_dtype = q.dtype
+        # 2. Linear Projections (Replicating the baddbmm logic)
+        # FlashAttention uses internal weights (in_proj_weight/bias)
+        # We apply them to q, k, v to get the combined QKV tensor
+        x = torch.stack([q, k, v]) # [3, batch_size, num_tokens, embed_dim]
+        x = x.view(3, -1, embed_dim) # Flatten for baddbmm
+        
+        # Replicate: x = torch.baddbmm(self.ib(), x, self.iw())
+        # Note: Using the weights from the provided flash_attn_module
+        x = torch.baddbmm(
+            self.in_proj_bias.view(3, 1, -1).to(origin_dtype), 
+            x, 
+            self.in_proj_weight.view(3, embed_dim, embed_dim).transpose(1, 2).to(origin_dtype)
+        )
+
+        # 3. Reshape and Split Heads
+        # Reshape back to [3, batch, tokens, heads, head_dim]
+        qkv = x.view(3, batch_size, num_tokens, num_heads, head_dim)
+        
+        # Split into individual Q, K, V and transpose to [batch, heads, tokens, head_dim]
+        # This is the standard format for PyTorch attention
+        q_out = qkv[0].transpose(1, 2)
+        k_out = qkv[1].transpose(1, 2)
+        v_out = qkv[2].transpose(1, 2)
+
+        scaling = head_dim ** -0.5
+        attn_scores = torch.matmul(q_out, k_out.transpose(-2, -1)) * scaling
+        
+        # 3. Apply Softmax
+        # This is the point where standard attention usually slows down 
+        # because it has to read/write the huge N x N matrix to memory
+        attn_weights = F.softmax(attn_scores, dim=-1)
+        
+        # 4. Multiply by Values
+        # [batch, heads, tokens, tokens] @ [batch, heads, tokens, head_dim]
+        attn_output = torch.matmul(attn_weights, v_out)
+
+        # 5. Reshape and Final Projection
+        attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, num_tokens, embed_dim)
+        
+        # Final output projection
+        output = F.linear(
+            attn_output, 
+            self.out_proj.weight, 
+            self.out_proj.bias
+        )
+
+        return output, None
 
 class FlashAttention(nn.MultiheadAttention):
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
@@ -32,10 +91,10 @@ class FlashAttention(nn.MultiheadAttention):
         origin_dtype = q.dtype
         # Determine target dtype for FlashAttention (must be float16 or bfloat16)
         target_dtype = torch.float16 if origin_dtype == torch.float32 else origin_dtype
-
         x = torch.stack([q, k, v])
         x = x.to(target_dtype)
         x = x.view(3, -1, x.shape[-1])
+
         x = torch.baddbmm(
             self.ib().to(target_dtype), 
             x, 
@@ -72,6 +131,7 @@ class GroupAttention(nn.Module):
         super().__init__()
         self.group_size = group_size
         self.attn = FlashAttention(in_channels, num_heads)
+        # self.attn = OrdinaryMultiHeadAttn(in_channels, num_heads)
 
     def forward(self, x, pe):
         size = x.shape[0]
@@ -82,6 +142,7 @@ class GroupAttention(nn.Module):
 
         q = k = x + pe
         v = x
+
         x, _ = self.attn(q, k, v)
 
         x = x.view(num_groups * self.group_size, -1)
@@ -106,7 +167,6 @@ class BasicLayer(nn.Module):
 
 
     def forward(self, src, pe):
-        import pdb; pdb.set_trace()
         src = self.norm1(src + self.attn(src, pe))
         src = self.norm2(src + self.fc2(self.act(self.fc1(src))))
 
@@ -137,8 +197,8 @@ class BasicBlock(nn.Module):
         # Run through the four basic layers while performing shift and sort operations
         for k, name in enumerate(["x", "x_shift", "y", "y_shift"]):
             # If retained_layer_list does not exist OR is 1 OR controller training is active, run that particular layer
-            # During normal layerdrop training and all inference retained_layer_list is 1D tensor
-            if controller_training or retained_layer_list is None or retained_layer_list[k]:
+            # During normal layerdrop training and all inference retained_layer_list has tensor shape [1, 8]
+            if controller_training or retained_layer_list is None or retained_layer_list[0][k]:
                 indices = mappings[name]
                 x_new = self.block[k](x[indices][mappings["flat2win"]], pe[indices][mappings["flat2win"]])[
                     mappings["win2flat"]
@@ -146,7 +206,10 @@ class BasicBlock(nn.Module):
 
                 # If we are doing controller training, then retained_layer_list is going to be B x 12 as it is lidar
                 if controller_training:
-                    x[indices] = x[indices] * (1 - retained_layer_list[:, k]) + x_new * retained_layer_list[:, k]
+                    across_batch_mask = retained_layer_list[:, k]
+                    repeats = mappings['batch_start_indices'][1:] - mappings['batch_start_indices'][:-1]
+                    expanded_mask = torch.unsqueeze(torch.repeat_interleave(across_batch_mask, repeats), dim=-1) # Match dims with x[indices]
+                    x[indices] = x[indices] * (1 - expanded_mask) + x_new * expanded_mask
                 else:
                     x[indices] = x_new
 
@@ -202,8 +265,8 @@ class FlattenedWindowMapping(nn.Module):
         coords = coords.long()
 
         _, num_per_batch = torch.unique(coords[:, 0], sorted=False, return_counts=True)
+
         batch_start_indices = F.pad(torch.cumsum(num_per_batch, dim=0), (1, 0))
-        import pdb; pdb.set_trace()
         num_per_batch_p = (
             torch.div(
                 batch_start_indices[1:] - batch_start_indices[:-1] + self.group_size - 1,
@@ -213,8 +276,21 @@ class FlattenedWindowMapping(nn.Module):
             * self.group_size
         )
         batch_start_indices_p = F.pad(torch.cumsum(num_per_batch_p, dim=0), (1, 0))
-        flat2win = torch.arange(batch_start_indices_p[-1]).to(coords.device)
-        win2flat = torch.arange(batch_start_indices[-1]).to(coords.device)
+        needed1 = int(batch_start_indices_p[-1])
+        needed2 = int(batch_start_indices[-1])
+        max_needed = max(needed1, needed2)
+
+        if not hasattr(self, "_arange_cache") or self._arange_cache.numel() < max_needed:
+            self._arange_cache = torch.arange(max_needed, device=coords.device)
+
+        flat2win = self._arange_cache[:needed1].clone()
+        win2flat = self._arange_cache[:needed2].clone()
+
+        # flat2win = torch.arange(batch_start_indices_p[-1]).to(coords.device)
+        # win2flat = torch.arange(batch_start_indices[-1]).to(coords.device)
+
+
+        
         for i in range(batch_size):
             win2flat[batch_start_indices[i] : batch_start_indices[i + 1]] += (
                 batch_start_indices_p[i] - batch_start_indices[i]
@@ -233,8 +309,10 @@ class FlattenedWindowMapping(nn.Module):
             flat2win[batch_start_indices_p[i] : batch_start_indices_p[i + 1]] -= (
                 batch_start_indices_p[i] - batch_start_indices[i]
             )
+        
 
-        mappings = {"flat2win": flat2win, "win2flat": win2flat}
+        mappings = {"flat2win": flat2win, "win2flat": win2flat, 'batch_start_indices':batch_start_indices}
+
         for shifted in [False, True]:
             (
                 n2,
@@ -342,9 +420,9 @@ class FlatFormer(nn.Module):
 
     # Added LayerDropping Logic
     def forward(self, x, coords, batch_size, retained_layer_list=None, controller_training=False):
+
         pe = self.embedding(coords, x.dtype)
         mappings = self.mapping(coords, batch_size)
-
         for i, block in enumerate(self.block_list):
             # Chunk the list four at a time for each block
             stage_layer_list = None
@@ -352,8 +430,6 @@ class FlatFormer(nn.Module):
                 stage_layer_list = retained_layer_list[:, i*4:(i+1) * 4]
 
             x = block(x, pe, mappings, stage_layer_list, controller_training)
-
-
         x = self.recover_bev(x, coords, batch_size)
 
         return x
@@ -389,5 +465,3 @@ class FlatFormer(nn.Module):
         return batch_canvas
 
 
-if __name__=='__main__':
-    import pdb; pdb.set_trace()

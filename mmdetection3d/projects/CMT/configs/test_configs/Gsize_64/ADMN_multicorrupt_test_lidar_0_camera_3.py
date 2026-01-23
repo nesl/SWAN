@@ -1,17 +1,6 @@
-'''
-We train from the pretrained lidar checkpoint that does about 0.62 mAP
-Unfreeze lidar but make sure the learning rate is low
-Train image with modal masking to make sure that the image backbone actually learns
-
-Final result about 0.66 mAP, which is good w the limited image backbone resolution. 
-TODO test the image only performance, may be able to push more performance from this
-
-'''
 
 
-
-
-_base_ = ['../../../configs/_base_/default_runtime.py']
+_base_ = ['/workspace/mmdetection3d/configs/_base_/default_runtime.py']
 custom_imports = dict(
     imports=['projects.BEVFusion.bevfusion', 'projects.UniM2AE', 'projects.CMT'], allow_failed_imports=False)
 
@@ -39,8 +28,15 @@ ida_aug_conf = {
     }
 
 metainfo = dict(classes=class_names)
-dataset_type = 'NuScenesDataset'
-data_root = 'data/nuscenes/'
+
+dataset_type = 'NuScenesCorruptDataset'
+data_root = '/workspace/mmdetection3d/data/nuscenes/'
+corruption_root = '/workspace/mmdetection3d/data/multicorrupt'  # Root directory where corrupted data is stored
+camera_corruption = 'dark'  # 'fog', 'snow', 'temporalmisalignment', 'brightness', 'dark', 'missingcamera', 'motionblur', None
+lidar_corruption = None  # 'pointsreducing', 'beamsreducing', 'snow', 'fog', 'spatialmisalignment', 'temporalmisalignment', 'motionblur', None
+severity_distribution = {3:1}  # Only sample severity 3
+
+
 data_prefix = dict(
     pts='samples/LIDAR_TOP',
     CAM_FRONT='samples/CAM_FRONT',
@@ -57,10 +53,23 @@ backend_args = None
 
 model = dict(
     type='CmtDetector',
-    enable_modal_mask=True,
-    layerdrop_rate=0.2,
+    use_grid_mask=True,
+    controller = dict(
+        type='ConvLayerController',
+        hard_voxelizer=dict(
+            type='DynamicVFE_New',
+            in_channels=5,
+            feat_channels=[64, 128],
+            with_distance=False,
+            voxel_size=[1, 1, 8],
+            point_cloud_range=point_cloud_range,
+            norm_cfg=dict(type='naiveSyncBN1d', eps=1e-3, momentum=0.01)
+        ),
+        layer_budget=10
+        # Use defaults for now
+    ),
     data_preprocessor=dict(
-        type='Det3DDataPreprocessor',
+        type='DualVoxelizationPreprocessor',
         voxel=True,
         voxel_type='dynamic',  # <--- here
         voxel_layer=dict(
@@ -69,6 +78,13 @@ model = dict(
             voxel_size=voxel_size,
             max_voxels=(-1, -1)
         ),
+        controller_voxel_type='dynamic',
+        controller_voxel_layer=dict(
+            max_num_points=-1,
+            point_cloud_range=point_cloud_range,
+            voxel_size=[1, 1, 8], # Use two meter large voxels, feature map is now about (54, 54),
+            max_voxels=(-1, -1) # Train, test, this is probably much larger than we will ever encounter
+        )
     ),
     pts_voxel_encoder=dict(
         type='DynamicVFE_New',
@@ -133,6 +149,11 @@ model = dict(
         out_indices=[2, 3],
         with_cp=False,
         convert_weights=True,
+        init_cfg=dict(
+            type='Pretrained',
+            checkpoint=  # noqa: E251
+            'https://github.com/SwinTransformer/storage/releases/download/v1.0.0/swin_tiny_patch4_window7_224.pth'  # noqa: E501
+        )
     ),
 
     img_neck=dict(
@@ -238,7 +259,6 @@ model = dict(
 )
 
 
-
 train_pipeline = [
     dict(
         type='LoadPointsFromFile',
@@ -281,7 +301,8 @@ train_pipeline = [
             'ori_lidar2img', 'img_aug_matrix', 'box_type_3d', 'sample_idx',
             'lidar_path', 'img_path', 'transformation_3d_flow', 'pcd_rotation',
             'pcd_scale_factor', 'pcd_trans', 'img_aug_matrix',
-            'lidar_aug_matrix', 'num_pts_feats', 'gt_bboxes_3d', 'gt_labels_3d'
+            'lidar_aug_matrix', 'num_pts_feats', 'gt_bboxes_3d', 'gt_labels_3d',
+            'corruption_info'
         ])
 ]
 
@@ -321,32 +342,52 @@ test_pipeline = [
         meta_keys=[
             'cam2img', 'ori_cam2img', 'lidar2cam', 'lidar2img', 'cam2lidar', 
             'ori_lidar2img', 'img_aug_matrix', 'box_type_3d', 'sample_idx', 
-            'lidar_path', 'img_path', 'num_pts_feats'
+            'lidar_path', 'img_path', 'num_pts_feats', 'corruption_info'
         ]
     )
 
 ]
 
 train_dataloader = dict(
-    batch_size=12,
-    num_workers=16,
+    batch_size=3,
+    num_workers=12,
     persistent_workers=True,
     sampler=dict(type='DefaultSampler', shuffle=True),
+
     dataset=dict(
-        type='CBGSDataset',
-        dataset=dict(
-            type=dataset_type,
-            data_root=data_root,
-            ann_file='nuscenes_infos_train.pkl',
-            pipeline=train_pipeline,
-            metainfo=metainfo,
-            modality=input_modality,
-            test_mode=False,
-            data_prefix=data_prefix,
-            use_valid_flag=True,
-            # we use box_type_3d='LiDAR' in kitti and nuscenes dataset
-            # and box_type_3d='Depth' in sunrgbd and scannet dataset.
-            box_type_3d='LiDAR')))
+        type=dataset_type,
+        data_root=data_root,
+        ann_file='nuscenes_infos_train.pkl',
+        pipeline=train_pipeline,
+        metainfo=metainfo,
+        modality=input_modality,
+        test_mode=False,
+        data_prefix=data_prefix,
+        lidar_corruption=lidar_corruption,
+        camera_corruption=camera_corruption,
+        corruption_root=corruption_root,
+        use_valid_flag=True,
+        severity_distribution = severity_distribution,
+        return_corruption_info = True,
+        # we use box_type_3d='LiDAR' in kitti and nuscenes dataset
+        # and box_type_3d='Depth' in sunrgbd and scannet dataset.
+        box_type_3d='LiDAR'))
+
+    # dataset=dict(
+    #     type='NuScenesDataset',
+    #     data_root=data_root,
+    #     ann_file='nuscenes_infos_train.pkl',
+    #     pipeline=train_pipeline,
+    #     metainfo=metainfo,
+    #     modality=input_modality,
+    #     test_mode=False,
+    #     data_prefix=data_prefix,
+    #     use_valid_flag=True,
+    #     # we use box_type_3d='LiDAR' in kitti and nuscenes dataset
+    #     # and box_type_3d='Depth' in sunrgbd and scannet dataset.
+    #     box_type_3d='LiDAR'))
+
+
 val_dataloader = dict(
     batch_size=1,
     num_workers=4,
@@ -360,10 +401,17 @@ val_dataloader = dict(
         pipeline=test_pipeline,
         metainfo=metainfo,
         modality=input_modality,
-        data_prefix=data_prefix,
         test_mode=True,
-        box_type_3d='LiDAR',
-        backend_args=backend_args))
+        data_prefix=data_prefix,
+        lidar_corruption=lidar_corruption,
+        camera_corruption=camera_corruption,
+        corruption_root=corruption_root,
+        use_valid_flag=True,
+        severity_distribution = severity_distribution,
+        return_corruption_info = True,
+        # we use box_type_3d='LiDAR' in kitti and nuscenes dataset
+        # and box_type_3d='Depth' in sunrgbd and scannet dataset.
+        box_type_3d='LiDAR'))
 test_dataloader = val_dataloader
 
 val_evaluator = dict(
@@ -375,31 +423,30 @@ val_evaluator = dict(
 test_evaluator = val_evaluator
 
 
-
-param_scheduler = [
-    dict(
-        type='OneCycleLR',
-        total_steps=12,            # Total epochs
-        by_epoch=True,             # It's an epoch-based scheduler
-        eta_max=0.0001,            # Max LR
-        pct_start=0.1,             # Max at epoch 2
-        div_factor=8.0,            # Matches target_ratio=(8, ...)
-        final_div_factor=1e2,      # Standard decay
-        convert_to_iter_based=True # Update every iteration, not just epoch end
-    )
-]
-
 # runtime settings
-train_cfg = dict(by_epoch=True, max_epochs=12, val_interval=1)
+train_cfg = dict(by_epoch=False, max_iters=3000, val_interval=4000)
 val_cfg = dict()
 test_cfg = dict()
 
-# For the lidar components, set a smaller LR so they dont get overwritten at the start
+param_scheduler = [
+    dict(
+        type='LinearLR',
+        start_factor=1.0,      # Start at the base LR (0.001)
+        end_factor=0.001,      # Decay to 1/1000 of the base LR
+        begin=0,               # Start decay at iteration 0
+        end=5000,             # End decay at the final iteration (10k)
+        by_epoch=False         # Use iterations, not epochs
+    )
+]
+
 optim_wrapper = dict(
     type='AmpOptimWrapper',
-    optimizer=dict(type='AdamW', lr=0.0001, weight_decay=0.01),
-    clip_grad=dict(max_norm=35, norm_type=2),
-)
+    optimizer=dict(type='AdamW', lr=1e-3, weight_decay=0.01),
+    clip_grad=dict(max_norm=35, norm_type=2))
+
+custom_hooks = [
+    dict(type='FreezeLayersHook', train_module_names=['controller'])
+]
 
 
 log_processor = dict(window_size=50)
@@ -408,17 +455,9 @@ default_hooks = dict(
     logger=dict(type='LoggerHook', interval=50),
     checkpoint=dict(type='CheckpointHook', interval=1))
 
-custom_hooks = [
-    dict(type='FreezeSpecificModuleHook', freeze_names=['img_backbone', 'pts_middle_encoder'])
-]
 
 randomness = dict(
     seed=100,
     diff_rank_seed=False,
     # deterministic=True
 )
-
-find_unused_parameters=True # If we do modal dropping find_unused_parameters must be true or else it throws error
-
-resume = False
-load_from='/workspace/mmdetection3d/unified_unimodal_layerdrop.pth' # Load the weights from the flatformer

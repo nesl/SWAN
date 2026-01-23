@@ -1,27 +1,39 @@
 '''
-We train a lidar only, unimodal detection model
-This utilizes the flatformer lidar backbone which is faster than SST
-and competitive with classic convolutional backbones
+Swin Transformer Training with LayerDrop
+Achieves NDS: 0.4217  mAP: 0.3439 at Epoch 50
+Layerdropped results to come
+
 '''
 
-
-_base_ = ['../../../configs/_base_/default_runtime.py']
+_base_ = ['/workspace/mmdetection3d/configs/_base_/default_runtime.py']
 custom_imports = dict(
     imports=['projects.BEVFusion.bevfusion', 'projects.UniM2AE', 'projects.CMT'], allow_failed_imports=False)
 
-# We are using pillars that cover the entire z axis, and x, y size of 0.15 meters
+# These are point cloud specific, kept them anyways since some downstream components refer to them, unsure if we can remove
 voxel_size = (0.15, 0.15, 8) 
-# Given the point cloud range, this corresponds to a grid size of 720 x 720 x 1
 grid_size = (720, 720, 1)
-# We define a local "window" that is used to decide how the tokens are sorted
 window_shape=(16, 16, 1)
-# Out size factor defines after the neck, what is the feature size with respect to grid size. We downsample by 4
+sparse_shape = (720, 720, 1)
 out_size_factor = 4
+
+# Change the point cloud range slightly smaller to prevent out of bounds errors due to strange rounding
 point_cloud_range = [-54.0, -54.0, -5.0, 53.95, 53.95, 2.95]
 class_names = [
     'car', 'truck', 'construction_vehicle', 'bus', 'trailer', 'barrier',
     'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone'
 ]
+img_norm_cfg = dict(
+    mean=[103.530, 116.280, 123.675], std=[57.375, 57.120, 58.395], to_rgb=False)
+    
+ida_aug_conf = {
+        "resize_lim": (0.47, 0.625),
+        "final_dim": (320, 800),
+        "bot_pct_lim": (0.0, 0.0),
+        "rot_lim": (0.0, 0.0),
+        "H": 900,
+        "W": 1600,
+        "rand_flip": True,
+    }
 
 metainfo = dict(classes=class_names)
 dataset_type = 'NuScenesDataset'
@@ -35,74 +47,50 @@ data_prefix = dict(
     CAM_BACK_RIGHT='samples/CAM_BACK_RIGHT',
     CAM_BACK_LEFT='samples/CAM_BACK_LEFT',
     sweeps='sweeps/LIDAR_TOP')
-input_modality = dict(use_lidar=True, use_camera=False)
+input_modality = dict(use_lidar=True, use_camera=True)
 
 backend_args = None
 
 model = dict(
     type='CmtDetector',
-    # We perform dynamic voxelization that assigns points to a given voxel in the grid, can have empty voxels 
-    # Contrasts with hard voxelization in which we either drop points or pad to a certain num_points per voxel
     data_preprocessor=dict(
         type='Det3DDataPreprocessor',
-        voxel=True,
-        voxel_type='dynamic',  # <--- here
-        voxel_layer=dict(
-            max_num_points=-1,
-            point_cloud_range=point_cloud_range,
-            voxel_size=voxel_size,
-            max_voxels=(-1, -1)
-        ),
     ),
-    # Each voxel is translated into a given feature, DynamicVFE_New is from UniM2AE
-    # DynamicVFE is able to process a variable number of points per voxel to turn them into a single feature
-    pts_voxel_encoder=dict(
-        type='DynamicVFE_New',
-        in_channels=5,
-        feat_channels=[64, 128],
-        with_distance=False,
-        voxel_size=voxel_size,
-        with_cluster_center=True,
-        with_voxel_center=True,
-        return_gt_points=True,
-        point_cloud_range=point_cloud_range,
-        norm_cfg=dict(type='naiveSyncBN1d', eps=1e-3, momentum=0.01)
-    ),
-    # FlatFormer middle encoder
-    pts_middle_encoder=dict(
-        type='FlatFormer',
-        in_channels=128,
-        num_heads=8,
-        num_blocks=2, # We have two blocks of 4 layers each
-        activation="gelu",
-        window_shape=window_shape,
-        sparse_shape=grid_size,
-        output_shape=[grid_size[0], grid_size[1]],
-        pos_temperature=10000,
-        normalize_pos=False,
-        group_size=64, # Group size defines the attention size. We sort according to the windows and then do attention within a group of 64
-    ),
-    # Transforms my 720x720 feature map into a multi-scale map, outputs 360 x 360 and 180 x 180
-    pts_backbone=dict(
-        type='SECOND',
-        in_channels=128,
-        out_channels=[64, 128],
-        layer_nums=[3, 3],
-        layer_strides=[2, 2],
-        conv_cfg=dict(type='Conv2d', bias=False),
-        norm_cfg=dict(type='naiveSyncBN2d', eps=1e-3, momentum=0.01),
-    ),
-    # FPN unifies into one single 180 x 180 feature map by downsampling and then merging
-    pts_neck=dict(
-        type='SECONDFPN',
-        norm_cfg=dict(type='naiveSyncBN2d', eps=1e-3, momentum=0.01),
-        in_channels=[64, 128],
-        upsample_strides=[0.5, 1],
-        out_channels=[256, 256]
+    layerdrop_rate=0.2,
+   
+    # BEGIN CAMERA COMPONENTS
+    img_backbone = dict(
+        type='mmdet.SwinTransformer',
+        embed_dims=96,
+        depths=[2, 2, 6, 2],
+        num_heads=[3, 6, 12, 24],
+        window_size=7,
+        mlp_ratio=4,
+        qkv_bias=True,
+        qk_scale=None,
+        drop_rate=0.0,
+        attn_drop_rate=0.0,
+        drop_path_rate=0.2,
+        patch_norm=True,
+        out_indices=[2, 3],
+        with_cp=False,
+        convert_weights=True,
+        init_cfg=dict(
+            type='Pretrained',
+            checkpoint=  # noqa: E251
+            'https://github.com/SwinTransformer/storage/releases/download/v1.0.0/swin_tiny_patch4_window7_224.pth'  # noqa: E501
+            # This is a default pretrained swintransformer, NOT OPTIMIZED FOR NUSCENES
+        )
     ),
 
+    img_neck=dict(
+        type='CPFPN',
+        in_channels=[384, 768],
+        out_channels=256,
+        num_outs=2),
+
     pts_bbox_head=dict(
-        type='CmtLidarHead',
+        type='CmtImageHead',
         in_channels=512,
         hidden_dim=256,
         downsample_scale=out_size_factor,
@@ -125,7 +113,7 @@ model = dict(
         separate_head=dict(
             type='SeparateTaskHead', init_bias=-2.19, final_kernel=1),
         transformer=dict(
-            type='CmtLidarTransformer',
+            type='CmtImageTransformer',
             decoder=dict(
                 type='PETRTransformerDecoder',
                 return_intermediate=True,
@@ -196,83 +184,39 @@ model = dict(
     )
 )
 
-# db_sampler acts as a cut+paste in the lidar point cloud, adds additional difficult classes into the training point cloud
-db_sampler = dict(
-    data_root=data_root,
-    info_path=data_root + 'nuscenes_dbinfos_train.pkl',
-    rate=1.0,
-    prepare=dict(
-        filter_by_difficulty=[-1],
-        filter_by_min_points=dict(
-            car=5,
-            truck=5,
-            bus=5,
-            trailer=5,
-            construction_vehicle=5,
-            traffic_cone=5,
-            barrier=5,
-            motorcycle=5,
-            bicycle=5,
-            pedestrian=5)),
-    classes=class_names,
-    sample_groups=dict(
-        car=2,
-        truck=3,
-        construction_vehicle=7,
-        bus=4,
-        trailer=6,
-        barrier=2,
-        motorcycle=6,
-        bicycle=6,
-        pedestrian=2,
-        traffic_cone=2),
-    points_loader=dict(
-        type='LoadPointsFromFile',
-        coord_type='LIDAR',
-        load_dim=5,
-        use_dim=[0, 1, 2, 3, 4],
-        backend_args=backend_args))
 
+# Keep the lidar loading since strange things happen when it is removed
 train_pipeline = [
     dict(
         type='LoadPointsFromFile',
         coord_type='LIDAR',
         load_dim=5,
-        use_dim=5,
-        backend_args=backend_args),
-    dict(
-        type='LoadPointsFromMultiSweeps',
-        sweeps_num=9,
-        load_dim=5,
-        use_dim=5,
-        pad_empty_sweeps=True,
-        remove_close=True,
-        backend_args=backend_args),
-    dict(
-        type='LoadAnnotations3D',
-        with_bbox_3d=True,
-        with_label_3d=True,
-        with_attr_label=False),
-    dict(
-        type='ObjectSample',
-        db_sampler= db_sampler
+        use_dim=[0, 1, 2, 3, 4],
     ),
     dict(
-        type='BEVFusionGlobalRotScaleTrans',
+        type='LoadPointsFromMultiSweeps',
+        sweeps_num=10,
+        use_dim=[0, 1, 2, 3, 4],
+    ),
+    dict(type='LoadMultiViewImageFromFiles'),
+    dict(type='LoadAnnotations3D', with_bbox_3d=True, with_label_3d=True),
+    dict(
+        type='GlobalRotScaleTransAll',
+        rot_range=[-0.3925 * 2, 0.3925 * 2],
         scale_ratio_range=[0.9, 1.1],
-        rot_range=[-0.78539816, 0.78539816],
-        translation_std=0.5),
-    dict(type='BEVFusionRandomFlip3D'),
+        translation_std=[0.5, 0.5, 0.5]),
+    dict(
+        type='CustomRandomFlip3D',
+        sync_2d=False,
+        flip_ratio_bev_horizontal=0.5,
+        flip_ratio_bev_vertical=0.5),
     dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
     dict(type='ObjectRangeFilter', point_cloud_range=point_cloud_range),
-    dict(
-        type='ObjectNameFilter',
-        classes=[
-            'car', 'truck', 'construction_vehicle', 'bus', 'trailer',
-            'barrier', 'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone'
-        ]),
-    # Actually, 'GridMask' is not used here
+    dict(type='ObjectNameFilter', classes=class_names),
     dict(type='PointShuffle'),
+    dict(type='ResizeCropFlipImage', data_aug_conf = ida_aug_conf, training=True),
+    dict(type='NormalizeMultiviewImage', **img_norm_cfg),
+    dict(type='PadMultiViewImage', size_divisor=32),
     dict(
         type='Pack3DDetInputs',
         keys=[
@@ -289,39 +233,46 @@ train_pipeline = [
 ]
 
 test_pipeline = [
+    # 1. Load Points (Same as before)
     dict(
         type='LoadPointsFromFile',
         coord_type='LIDAR',
         load_dim=5,
-        use_dim=5,
-        backend_args=backend_args),
-    dict(
-        type='LoadPointsFromMultiSweeps',
-        sweeps_num=9,
-        load_dim=5,
-        use_dim=5,
-        pad_empty_sweeps=True,
-        remove_close=True,
-        backend_args=backend_args),
-    dict(
-        type='PointsRangeFilter',
-        point_cloud_range=point_cloud_range,
+        use_dim=[0, 1, 2, 3, 4],
     ),
     dict(
+        type='LoadPointsFromMultiSweeps',
+        sweeps_num=10,
+        use_dim=[0, 1, 2, 3, 4],
+    ),
+    # 2. Load Images (Same as before)
+    dict(type='LoadMultiViewImageFromFiles'),
+    
+    dict(type='ResizeCropFlipImage', data_aug_conf=ida_aug_conf, training=False),
+    
+    dict(type='NormalizeMultiviewImage', **img_norm_cfg),
+    
+    dict(type='PadMultiViewImage', size_divisor=32),
+    
+    # 4. Packaging (Replaces DefaultFormatBundle3D & Collect3D)
+    dict(
         type='Pack3DDetInputs',
-        keys=['img', 'points', 'gt_bboxes_3d', 'gt_labels_3d'],
+        keys=['img', 'points'], # No GT keys for testing
         meta_keys=[
-            'cam2img', 'ori_cam2img', 'lidar2cam', 'lidar2img', 'cam2lidar',
-            'ori_lidar2img', 'img_aug_matrix', 'box_type_3d', 'sample_idx',
-            'lidar_path', 'img_path', 'num_pts_feats', 'gt_bboxes_3d', 'gt_labels_3d'
-        ])
+            'cam2img', 'ori_cam2img', 'lidar2cam', 'lidar2img', 'cam2lidar', 
+            'ori_lidar2img', 'img_aug_matrix', 'box_type_3d', 'sample_idx', 
+            'lidar_path', 'img_path', 'num_pts_feats'
+        ]
+    )
+
 ]
 
 train_dataloader = dict(
-    batch_size=12,
+    batch_size=20,
     num_workers=16,
     persistent_workers=True,
     sampler=dict(type='DefaultSampler', shuffle=True),
+    # CBGSDataset repeats samples that are more difficult
     dataset=dict(
         type='CBGSDataset',
         dataset=dict(
@@ -364,51 +315,41 @@ val_evaluator = dict(
     backend_args=backend_args)
 test_evaluator = val_evaluator
 
-vis_backends = [dict(type='LocalVisBackend')]
-visualizer = dict(
-    type='Det3DLocalVisualizer', vis_backends=vis_backends, name='visualizer')
 
-optim_wrapper = dict(
-    type='AmpOptimWrapper',  # Native Mixed Precision wrapper
-    dtype='bfloat16',        # Use 'bfloat16' for your H100. Use 'float16' otherwise.
-    optimizer=dict(
-        type='AdamW',
-        lr=0.0001,
-        weight_decay=0.01
-    ),
-    # Gradient clipping moves here
-    clip_grad=dict(max_norm=35, norm_type=2)
-)
 
 param_scheduler = [
     dict(
         type='OneCycleLR',
-        total_steps=20,            # Total epochs
+        total_steps=50,            # Total epochs
         by_epoch=True,             # It's an epoch-based scheduler
-        eta_max=0.0005,            # Max LR
-        pct_start=0.4,             # Max at epoch 8
+        eta_max=0.0001,            # Max LR
+        pct_start=0.1,             # Max at epoch 8
         div_factor=8.0,            # Matches target_ratio=(8, ...)
         final_div_factor=1e4,      # Standard decay
         convert_to_iter_based=True # Update every iteration, not just epoch end
     )
 ]
+
 # runtime settings
-train_cfg = dict(by_epoch=True, max_epochs=20, val_interval=1)
+train_cfg = dict(by_epoch=True, max_epochs=50, val_interval=1)
 val_cfg = dict()
 test_cfg = dict()
 
-# Default setting for scaling LR automatically
-#   - `enable` means enable scaling LR automatically
-#       or not by default.
-#   - `base_batch_size` = (8 GPUs) x (4 samples per GPU).
-auto_scale_lr = dict(enable=True, base_batch_size=16)
+optim_wrapper = dict(
+    type='AmpOptimWrapper',
+    optimizer=dict(type='AdamW', lr=0.0001, weight_decay=0.01), # THE LR HERE IS OVERWRITTEN
+    clip_grad=dict(max_norm=35, norm_type=2))
+
+
 log_processor = dict(window_size=50)
 
 default_hooks = dict(
     logger=dict(type='LoggerHook', interval=50),
-    checkpoint=dict(type='CheckpointHook', interval=1))
+    checkpoint=dict(type='CheckpointHook', interval=5))
 
-# This disables the sampling process after 15 epochs, we train the last 5 epochs on the actual data to prevent domain shift
-custom_hooks = [dict(type='DisableObjectSampleHook', disable_after_epoch=15)]
-
-
+randomness = dict(
+    seed=100,
+    diff_rank_seed=False,
+    # deterministic=True
+)
+find_unused_parameters=True

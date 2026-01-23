@@ -137,22 +137,31 @@ class ConvLayerController(nn.Module):
         # )
 
         self.voxel_extractor = nn.Sequential(
-            nn.Conv2d(5, out_channels=12, kernel_size=3, stride=3),
-            nn.BatchNorm2d(num_features=12),
+            nn.Conv2d(128, out_channels=64, kernel_size=3, stride=2),
+            nn.BatchNorm2d(num_features=64),
             nn.ReLU(),
 
-            nn.Conv2d(in_channels=12, out_channels=3, kernel_size=2, stride=2),
+            nn.Conv2d(64, out_channels=64, kernel_size=3, stride=2),
+            nn.BatchNorm2d(num_features=64),
+            nn.ReLU(),
+
+            nn.Conv2d(in_channels=64, out_channels=3, kernel_size=3, stride=2),
             nn.BatchNorm2d(num_features=3),
             nn.ReLU()
         )
-        self.voxel_adapter = nn.Linear(243, embed_dim//2)
+        self.voxel_adapter = nn.Linear(432, embed_dim//2)
 
         self.img_extractor = nn.Sequential(
-            nn.Conv2d(3, out_channels=6, kernel_size=10, stride=10),
-            nn.BatchNorm2d(num_features=6),
+            nn.Conv2d(3, out_channels=64, kernel_size=3, stride=3),
+            nn.BatchNorm2d(num_features=64),
             nn.ReLU(),
 
-            nn.Conv2d(in_channels=6, out_channels=3, kernel_size=(8, 16), stride=(8, 16)),
+            nn.Conv2d(64, out_channels=64, kernel_size=3, stride=3),
+            nn.BatchNorm2d(num_features=64),
+            nn.ReLU(),
+
+
+            nn.Conv2d(in_channels=64, out_channels=3, kernel_size=(8, 16), stride=(8, 16)),
             nn.BatchNorm2d(num_features=3),
             nn.ReLU()
         )
@@ -169,7 +178,7 @@ class ConvLayerController(nn.Module):
         self.noise_output = nn.Sequential(
             nn.Linear(embed_dim, 250),
             nn.ReLU(),
-            nn.Linear(250, 3) # We softmax over these three logits (clean, noisy lidar, noisy image)
+            nn.Linear(250, 4) # We softmax over these three logits (clean, noisy lidar, noisy image)
         )
         self.output_head.apply(init_weights) # init output head weights to be very small, this forces it to be responsive to the noise embedding value
         self.logits_memory = [] # Used during inference only
@@ -186,11 +195,12 @@ class ConvLayerController(nn.Module):
     def forward(self, voxel_dict, raw_image, flatformer_layers, temp=1, discretization_method = 'admn'):
         controller_voxels = voxel_dict['controller_voxelization']['voxels']
         controller_coors = voxel_dict['controller_voxelization']['coors']
-        controller_num_points = voxel_dict['controller_voxelization']['num_points']
-        voxel_features = self.hard_voxelizer(controller_voxels, controller_num_points, controller_coors)
+        #controller_num_points = voxel_dict['controller_voxelization']['num_points']
+        with torch.autocast('cuda', enabled=False):
+            voxel_features, controller_coors = self.hard_voxelizer(controller_voxels, controller_coors)
 
         B = raw_image.shape[0]
-        bev_grid = self.manual_scatter(voxel_features, controller_coors, B, (54, 54), 5)
+        bev_grid = self.manual_scatter(voxel_features, controller_coors, B, (108, 108), 128)
         voxel_noise_features = torch.reshape(self.voxel_extractor(bev_grid), (B, -1))
         voxel_noise_features = self.voxel_adapter(voxel_noise_features)
 
@@ -220,17 +230,17 @@ class ConvLayerController(nn.Module):
 
         if discretization_method == 'admn':
             if self.training:
-                gumbel_samples = gumbel_softmax_sample(logits, temperature=temp, scale=0.1)
+                gumbel_samples = gumbel_softmax_sample(logits, temperature=temp, scale=0.01)
             else: # If this is during inference, we don't do any gumbel softmax sampling
                 gumbel_samples = logits
             discretized = get_top_k(gumbel_samples, k=self.additional_layers, zero_value=0)
             discretized = torch.reshape(discretized, (B, -1))
             discretized[:, 0] = 1 # Set the first layer to always chosen
-            discretized[:, 8] = 1
+            discretized[:, flatformer_layers] = 1
             gumbel_samples = torch.reshape(gumbel_samples, (B, -1))
             logits = torch.reshape(logits, (B, -1))
-            print('LiDAR:', logits[0][:flatformer_layers])
-            print('Image:', logits[0][flatformer_layers:])
+            print('\nLogits LiDAR:', logits[0][:flatformer_layers])
+            print('Logits Image:', logits[0][flatformer_layers:])
             print('LiDAR:', discretized[0][:flatformer_layers])
             print('Image:',  discretized[0][flatformer_layers:])
             return gumbel_samples + (discretized - gumbel_samples).detach(), predicted_noise
@@ -252,16 +262,25 @@ class ConvLayerController(nn.Module):
                 discretized = sampler(logits)
             else:
                 discretized = get_top_k(logits, k=self.additional_layers, zero_value=0)
-            discretized = torch.reshape(discretized, (B, -1, 12))
-            discretized[:, :, 0] = 1
-            logits = torch.reshape(logits, (B, -1, 12))
-            # print('Image:', logits[0][0])
-            # print('Depth:', logits[0][1])
-            print('Image:', discretized[0][0])
-            print('Audio:',  discretized[0][1])
+            discretized = torch.reshape(discretized, (B, -1))
+            discretized[:, 0] = 1 # Set the first layer to always chosen
+            discretized[:, flatformer_layers] = 1
+            logits = torch.reshape(logits, (B, -1))
+            print('\nLiDAR Logits:', logits[0][:flatformer_layers])
+            print('Image Logits:', logits[0][flatformer_layers:])
+            print('LiDAR:', discretized[0][:flatformer_layers])
+            print('Image:',  discretized[0][flatformer_layers:])
             return discretized, predicted_noise
         else:
             raise Exception('Invalid discretization')
+        
+'''
+LiDAR: tensor([-99.0000,   0.5488,   0.5771,   0.5854,   0.6016,   0.6001,   0.5825,
+          0.5596], device='cuda:0', dtype=torch.float16,
+       grad_fn=<SliceBackward0>)
+Image: tensor([-99.0000,  -4.9492,   0.6382,   0.6567,   0.1958,   0.6025,   0.5840,
+          0.6528,  -3.5117,   0.5576,   0.6221,  -4.2305]
+'''
 
 
 

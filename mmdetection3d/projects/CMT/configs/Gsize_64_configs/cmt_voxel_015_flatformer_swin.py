@@ -7,7 +7,7 @@ or the original CMT paper that begin from pretrained image checkpoints
 
 
 
-_base_ = ['../../../configs/_base_/default_runtime.py']
+_base_ = ['/workspace/mmdetection3d/configs/_base_/default_runtime.py']
 custom_imports = dict(
     imports=['projects.BEVFusion.bevfusion', 'projects.UniM2AE', 'projects.CMT'], allow_failed_imports=False)
 
@@ -55,16 +55,8 @@ model = dict(
     type='CmtDetector',
     use_grid_mask=True,
     enable_modal_mask=True,
-    controller = dict(
-        type='ConvLayerController',
-        hard_voxelizer=dict(
-            type='HardSimpleVFE',
-            num_features=5,
-        )
-        # Use defaults for now
-    ),
     data_preprocessor=dict(
-        type='DualVoxelizationPreprocessor',
+        type='Det3DDataPreprocessor',
         voxel=True,
         voxel_type='dynamic',  # <--- here
         voxel_layer=dict(
@@ -73,13 +65,6 @@ model = dict(
             voxel_size=voxel_size,
             max_voxels=(-1, -1)
         ),
-        controller_voxel_type='hard',
-        controller_voxel_layer=dict(
-            max_num_points=20,
-            point_cloud_range = point_cloud_range,
-            voxel_size=[2, 2, 8], # Use two meter large voxels, feature map is now about (54, 54),
-            max_voxels=(30000, 40000) # Train, test?
-        )
     ),
     pts_voxel_encoder=dict(
         type='DynamicVFE_New',
@@ -256,7 +241,7 @@ model = dict(
 
 db_sampler = dict(
     data_root=data_root,
-    info_path=data_root + 'nuscenes_dbinfos_train.new.pkl',
+    info_path=data_root + 'nuscenes_dbinfos_train.pkl',
     rate=1.0,
     prepare=dict(
         filter_by_difficulty=[-1],
@@ -384,7 +369,7 @@ test_pipeline = [
 ]
 
 train_dataloader = dict(
-    batch_size=2,
+    batch_size=8,
     num_workers=16,
     persistent_workers=True,
     sampler=dict(type='DefaultSampler', shuffle=True),
@@ -393,7 +378,7 @@ train_dataloader = dict(
         dataset=dict(
             type=dataset_type,
             data_root=data_root,
-            ann_file='nuscenes_infos_train.new.pkl',
+            ann_file='nuscenes_infos_train.pkl',
             pipeline=train_pipeline,
             metainfo=metainfo,
             modality=input_modality,
@@ -412,7 +397,7 @@ val_dataloader = dict(
     dataset=dict(
         type=dataset_type,
         data_root=data_root,
-        ann_file='nuscenes_infos_val.new.pkl',
+        ann_file='nuscenes_infos_val.pkl',
         pipeline=test_pipeline,
         metainfo=metainfo,
         modality=input_modality,
@@ -425,7 +410,7 @@ test_dataloader = val_dataloader
 val_evaluator = dict(
     type='NuScenesMetric',
     data_root=data_root,
-    ann_file=data_root + 'nuscenes_infos_val.new.pkl',
+    ann_file=data_root + 'nuscenes_infos_val.pkl',
     metric='bbox',
     backend_args=backend_args)
 test_evaluator = val_evaluator
@@ -472,3 +457,7 @@ randomness = dict(
     # deterministic=True
 )
 
+# resume=False
+# load_from='work_dirs/cmt_swin/epoch_13.pth'
+resume = True
+load_from = 'work_dirs/cmt_voxel_015_flatformer_swin/epoch_1.pth'

@@ -1,3 +1,12 @@
+'''
+Trains everything from scratch, jointly trains both the lidar and image backbones
+I have not had much success using this yet, it seems like my modalities will underfit rather severely
+May be better to start from one modality's checkpoint, similarly to BEVFusion (from pretrained img + lidar)
+or the original CMT paper that begin from pretrained image checkpoints
+'''
+
+
+
 _base_ = ['/workspace/mmdetection3d/configs/_base_/default_runtime.py']
 custom_imports = dict(
     imports=['projects.BEVFusion.bevfusion', 'projects.UniM2AE', 'projects.CMT'], allow_failed_imports=False)
@@ -44,9 +53,18 @@ backend_args = None
 
 model = dict(
     type='CmtDetector',
-    enable_modal_mask=True,
+    use_grid_mask=True,
+    controller = dict(
+        type='ConvLayerController',
+        hard_voxelizer=dict(
+            type='HardSimpleVFE',
+            num_features=5,
+        ),
+        layer_budget=10
+        # Use defaults for now
+    ),
     data_preprocessor=dict(
-        type='Det3DDataPreprocessor',
+        type='DualVoxelizationPreprocessor',
         voxel=True,
         voxel_type='dynamic',  # <--- here
         voxel_layer=dict(
@@ -55,6 +73,13 @@ model = dict(
             voxel_size=voxel_size,
             max_voxels=(-1, -1)
         ),
+        controller_voxel_type='hard',
+        controller_voxel_layer=dict(
+            max_num_points=20,
+            point_cloud_range = point_cloud_range,
+            voxel_size=[2, 2, 8], # Use two meter large voxels, feature map is now about (54, 54),
+            max_voxels=(30000, 40000) # Train, test, this is probably much larger than we will ever encounter
+        )
     ),
     pts_voxel_encoder=dict(
         type='DynamicVFE_New',
@@ -125,16 +150,6 @@ model = dict(
             'https://github.com/SwinTransformer/storage/releases/download/v1.0.0/swin_tiny_patch4_window7_224.pth'  # noqa: E501
         )
     ),
-    # LSSFPN is not a good fit for CMT
-    # img_neck=dict(
-    #     type='GeneralizedLSSFPN',
-    #     in_channels=[192, 384, 768],
-    #     out_channels=256,
-    #     start_level=0,
-    #     num_outs=3,
-    #     norm_cfg=dict(type='BN2d', requires_grad=True),
-    #     act_cfg=dict(type='ReLU', inplace=True),
-    #     upsample_cfg=dict(mode='bilinear', align_corners=False)),
 
     img_neck=dict(
         type='CPFPN',
@@ -239,7 +254,6 @@ model = dict(
 )
 
 
-
 train_pipeline = [
     dict(
         type='LoadPointsFromFile',
@@ -329,25 +343,25 @@ test_pipeline = [
 ]
 
 train_dataloader = dict(
-    batch_size=14,
+    batch_size=3,
     num_workers=16,
     persistent_workers=True,
     sampler=dict(type='DefaultSampler', shuffle=True),
+
     dataset=dict(
-        type='CBGSDataset',
-        dataset=dict(
-            type=dataset_type,
-            data_root=data_root,
-            ann_file='nuscenes_infos_train.pkl',
-            pipeline=train_pipeline,
-            metainfo=metainfo,
-            modality=input_modality,
-            test_mode=False,
-            data_prefix=data_prefix,
-            use_valid_flag=True,
-            # we use box_type_3d='LiDAR' in kitti and nuscenes dataset
-            # and box_type_3d='Depth' in sunrgbd and scannet dataset.
-            box_type_3d='LiDAR')))
+        type=dataset_type,
+        data_root=data_root,
+        ann_file='nuscenes_infos_train.pkl',
+        pipeline=train_pipeline,
+        metainfo=metainfo,
+        modality=input_modality,
+        test_mode=False,
+        data_prefix=data_prefix,
+        use_valid_flag=True,
+        # we use box_type_3d='LiDAR' in kitti and nuscenes dataset
+        # and box_type_3d='Depth' in sunrgbd and scannet dataset.
+        box_type_3d='LiDAR'))
+
 val_dataloader = dict(
     batch_size=1,
     num_workers=4,
@@ -376,35 +390,30 @@ val_evaluator = dict(
 test_evaluator = val_evaluator
 
 
-
-param_scheduler = [
-    dict(
-        type='OneCycleLR',
-        total_steps=20,            # Total epochs
-        by_epoch=True,             # It's an epoch-based scheduler
-        eta_max=0.0001,            # Max LR
-        pct_start=0.1,             # Max at epoch 2
-        div_factor=8.0,            # Matches target_ratio=(8, ...)
-        final_div_factor=1e4,      # Standard decay
-        convert_to_iter_based=True # Update every iteration, not just epoch end
-    )
-]
-
 # runtime settings
-train_cfg = dict(by_epoch=True, max_epochs=20, val_interval=1)
+train_cfg = dict(by_epoch=False, max_iters=10000, val_interval=4000)
 val_cfg = dict()
 test_cfg = dict()
 
+param_scheduler = [
+    dict(
+        type='LinearLR',
+        start_factor=1.0,      # Start at the base LR (0.001)
+        end_factor=0.001,      # Decay to 1/1000 of the base LR
+        begin=0,               # Start decay at iteration 0
+        end=5000,             # End decay at the final iteration (10k)
+        by_epoch=False         # Use iterations, not epochs
+    )
+]
+
 optim_wrapper = dict(
     type='AmpOptimWrapper',
-    optimizer=dict(type='AdamW', lr=0.0001, weight_decay=0.01),
-    clip_grad=dict(max_norm=35, norm_type=2),
-    paramwise_cfg=dict(
-        custom_keys={
-            'pts_bbox_head': dict(lr_mult=0.01),
-        }
-    )
-)
+    optimizer=dict(type='AdamW', lr=1e-3, weight_decay=0.01),
+    clip_grad=dict(max_norm=35, norm_type=2))
+
+custom_hooks = [
+    dict(type='FreezeLayersHook', train_module_names=['controller'])
+]
 
 
 log_processor = dict(window_size=50)
@@ -413,13 +422,6 @@ default_hooks = dict(
     logger=dict(type='LoggerHook', interval=50),
     checkpoint=dict(type='CheckpointHook', interval=1))
 
-custom_hooks = [
-    dict(type='DisableObjectSampleHook', disable_after_epoch=15),
-    dict(
-        type='FreezeLayersHook',
-        train_module_names=['pts_bbox_head', 'img_backbone', 'img_neck'] # The exact name of your new module in the model
-    ),
-]
 
 randomness = dict(
     seed=100,
@@ -427,7 +429,5 @@ randomness = dict(
     # deterministic=True
 )
 
-find_unused_parameters=True
-
-resume = False
-load_from='work_dirs/cmt_voxel_015_flatformer/epoch_20.pth'
+resume=False
+load_from= './H100_checkpoints/flatformer_swin_layerdrop.pth'

@@ -1,4 +1,4 @@
-_base_ = ['../../../configs/_base_/default_runtime.py']
+_base_ = ['/workspace/mmdetection3d/configs/_base_/default_runtime.py']
 custom_imports = dict(
     imports=['projects.CMT'], allow_failed_imports=False)
 
@@ -41,42 +41,6 @@ ida_aug_conf = {
         "rand_flip": True,
     }
 
-db_sampler = dict(
-    data_root=data_root,
-    info_path=data_root + 'nuscenes_dbinfos_train.pkl',
-    rate=1.0,
-    prepare=dict(
-        filter_by_difficulty=[-1],
-        filter_by_min_points=dict(
-            car=5,
-            truck=5,
-            bus=5,
-            trailer=5,
-            construction_vehicle=5,
-            traffic_cone=5,
-            barrier=5,
-            motorcycle=5,
-            bicycle=5,
-            pedestrian=5)),
-    classes=class_names,
-    sample_groups=dict(
-        car=2,
-        truck=3,
-        construction_vehicle=7,
-        bus=4,
-        trailer=6,
-        barrier=2,
-        motorcycle=6,
-        bicycle=6,
-        pedestrian=2,
-        traffic_cone=2),
-    points_loader=dict(
-        type='LoadPointsFromFile',
-        coord_type='LIDAR',
-        load_dim=5,
-        use_dim=[0, 1, 2, 3, 4],
-        backend_args=backend_args))
-
 train_pipeline = [
     dict(
         type='LoadPointsFromFile',
@@ -92,9 +56,46 @@ train_pipeline = [
     dict(type='LoadMultiViewImageFromFiles'),
     dict(type='LoadAnnotations3D', with_bbox_3d=True, with_label_3d=True),
     dict(
-        type='ObjectSample',
-        db_sampler= db_sampler
-    ),
+        type='UnifiedObjectSample',
+        sample_2d=False,
+        mixup_rate=0.5,
+        db_sampler=dict(
+            type='UnifiedDataBaseSampler',
+            data_root='data/nuscenes/',
+            info_path=data_root + 'nuscenes_dbinfos_train.new.pkl',
+            rate=1.0,
+            prepare=dict(
+                filter_by_difficulty=[-1],
+                filter_by_min_points=dict(
+                    car=5,
+                    truck=5,
+                    bus=5,
+                    trailer=5,
+                    construction_vehicle=5,
+                    traffic_cone=5,
+                    barrier=5,
+                    motorcycle=5,
+                    bicycle=5,
+                    pedestrian=5)),
+            classes=class_names,
+            sample_groups=dict(
+                car=2,
+                truck=3,
+                construction_vehicle=7,
+                bus=4,
+                trailer=6,
+                barrier=2,
+                motorcycle=6,
+                bicycle=6,
+                pedestrian=2,
+                traffic_cone=2),
+            points_loader=dict(
+                type='LoadPointsFromFile',
+                coord_type='LIDAR',
+                load_dim=5,
+                use_dim=[0, 1, 2, 3, 4],
+            ))),
+    dict(type='ModalMask3D', mode='train'),
     dict(
         type='GlobalRotScaleTransAll',
         rot_range=[-0.3925 * 2, 0.3925 * 2],
@@ -177,25 +178,26 @@ train_dataloader = dict(
     persistent_workers=True,
     sampler=dict(type='DefaultSampler', shuffle=True),
     dataset=dict(
-        type=dataset_type,
-        data_root=data_root,
-        ann_file='nuscenes_infos_train.new.pkl',
-        pipeline=train_pipeline,
-        metainfo=metainfo,
-        modality=input_modality,
-        test_mode=False,
-        data_prefix=data_prefix,
-        use_valid_flag=True,
-        # we use box_type_3d='LiDAR' in kitti and nuscenes dataset
-        # and box_type_3d='Depth' in sunrgbd and scannet dataset.
-        box_type_3d='LiDAR'))
+        type='CBGSDataset',
+        dataset=dict(
+            type=dataset_type,
+            data_root=data_root,
+            ann_file='nuscenes_infos_train.new.pkl',
+            pipeline=train_pipeline,
+            metainfo=metainfo,
+            modality=input_modality,
+            test_mode=False,
+            data_prefix=data_prefix,
+            use_valid_flag=True,
+            # we use box_type_3d='LiDAR' in kitti and nuscenes dataset
+            # and box_type_3d='Depth' in sunrgbd and scannet dataset.
+            box_type_3d='LiDAR')))
 val_dataloader = dict(
     batch_size=1,
     num_workers=4,
     persistent_workers=True,
     drop_last=False,
     sampler=dict(type='DefaultSampler', shuffle=False),
-
     dataset=dict(
         type=dataset_type,
         data_root=data_root,
@@ -206,11 +208,7 @@ val_dataloader = dict(
         data_prefix=data_prefix,
         test_mode=True,
         box_type_3d='LiDAR',
-        backend_args=backend_args),
-
-    
-)
-
+        backend_args=backend_args))
 test_dataloader = val_dataloader
 
 val_evaluator = dict(
@@ -221,9 +219,12 @@ val_evaluator = dict(
     backend_args=backend_args)
 test_evaluator = val_evaluator
 
+train_cfg = dict(by_epoch=True, max_epochs=20, val_interval=21)
+val_cfg = dict()
+test_cfg = dict()
+
 model = dict(
     type='CmtDetector',
-    enable_pruning=True,
     data_preprocessor=dict(
         type='Det3DDataPreprocessor',
         voxel=True,          # Enable voxelization
@@ -310,34 +311,6 @@ model = dict(
             type='SeparateTaskHead', init_bias=-2.19, final_kernel=1),
         transformer=dict(
             type='CmtTransformer',
-            # BEGIN ENCODER
-            encoder=dict(
-                # I want to repurpose this because it already has integration with Flash-Attention, rather than using the base transformer class
-                type='PETRTransformerDecoder', # We can use decoder since it is just a general class, operation_order dicates whether it acts as encoder or decoder
-                return_intermediate=False,
-                num_layers=6,
-                transformerlayers=dict(
-                    type='PETRTransformerDecoderLayer',
-                    with_cp=False,
-                    attn_cfgs=[
-                        dict(
-                            type='PETRMultiheadFlashAttention',
-                            embed_dims=256,
-                            num_heads=8,
-                            dropout=0.1),
-                        ],
-                    ffn_cfgs=dict(
-                        type='FFN',
-                        embed_dims=256,
-                        feedforward_channels=1024,
-                        num_fcs=2,
-                        ffn_drop=0.,
-                        act_cfg=dict(type='ReLU', inplace=True),
-                    ),
-                    feedforward_channels=1024, #unused
-                    operation_order=('self_attn', 'norm', 'ffn', 'norm')),
-            ),
-
             decoder=dict(
                 type='PETRTransformerDecoder',
                 return_intermediate=True,
@@ -382,7 +355,7 @@ model = dict(
                 # cls_cost=dict(type='ClassificationCost', weight=2.0),
                 cls_cost=dict(type='mmdet.FocalLossCost', weight=2.0),
                 reg_cost=dict(type='BBox3DL1Cost', weight=0.25),
-                iou_cost=dict(type='IoU3DCost_CMT', weight=0.0), # Fake cost. This is just to make it compatible with DETR head. 
+                iou_cost=dict(type='IoU3DCost', weight=0.0), # Fake cost. This is just to make it compatible with DETR head. 
                 pc_range=point_cloud_range,
                 code_weights=[2.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2, 0.2],
             ),
@@ -412,22 +385,19 @@ optim_wrapper = dict(
     dtype='bfloat16',        # Use 'bfloat16' for your H100. Use 'float16' otherwise.
     optimizer=dict(
         type='AdamW',
+        lr=0.0001,
         weight_decay=0.01
     ),
+    # Parameter-specific learning rates move here
+    paramwise_cfg=dict(
+        custom_keys={
+            'img_backbone': dict(lr_mult=0.01, decay_mult=5),
+            'img_neck': dict(lr_mult=0.1),
+        }
+    ),
+    # Gradient clipping moves here
+    clip_grad=dict(max_norm=35, norm_type=2)
 )
-
-param_scheduler = [
-    dict(
-        type='OneCycleLR',
-        total_steps=20,            # Total epochs
-        by_epoch=True,             # It's an epoch-based scheduler
-        eta_max=0.00005,            # Max LR
-        pct_start=0.4,             # Matches step_ratio_up=0.4
-        div_factor=8.0,            # Matches target_ratio=(8, ...)
-        final_div_factor=1e4,      # Standard decay
-        convert_to_iter_based=True # Update every iteration, not just epoch end
-    )
-]
 
 # NOTE: The old 'custom_fp16=dict(pts_voxel_encoder=False...)' is removed.
 # You have already handled this by ensuring your Voxel/Middle encoders
@@ -438,6 +408,18 @@ param_scheduler = [
 # ---------------------------------------------------------
 # The old config used a 'cyclic' policy with a 40% step up. 
 # The closest modern equivalent that handles both LR and Momentum is OneCycleLR.
+param_scheduler = [
+    dict(
+        type='OneCycleLR',
+        total_steps=20,            # Total epochs
+        by_epoch=True,             # It's an epoch-based scheduler
+        eta_max=0.0001,            # Max LR
+        pct_start=0.4,             # Matches step_ratio_up=0.4
+        div_factor=8.0,            # Matches target_ratio=(8, ...)
+        final_div_factor=1e4,      # Standard decay
+        convert_to_iter_based=True # Update every iteration, not just epoch end
+    )
+]
 
 # ---------------------------------------------------------
 # 3. Training Loop (Replaces 'total_epochs' & 'workflow')
@@ -456,23 +438,12 @@ test_cfg = dict(type='TestLoop')
 default_hooks = dict(
     timer=dict(type='IterTimerHook'),
     logger=dict(type='LoggerHook', interval=50),
+    param_scheduler=dict(type='ParamSchedulerHook'),
     checkpoint=dict(type='CheckpointHook', interval=1),
     sampler_seed=dict(type='DistSamplerSeedHook'),
     visualization=dict(type='Det3DVisualizationHook'),
 )
-
-custom_hooks = [
-    dict(
-        type='FreezeLayersHook',
-        train_module_names=['pts_bbox_head'] # The exact name of your new module in the model
-    ),
-    dict(
-        type='CutoffRatioIncrementHook',
-        increment=0.01,
-        max_value=0.1
-    )
-]
-
+auto_scale_lr = dict(enable=True, base_batch_size=16)
 # Tensorboard is now defined in the visualizer, not the hooks
 visualizer = dict(
     type='Det3DLocalVisualizer',
@@ -490,7 +461,47 @@ visualizer = dict(
 # 'gpu_ids' is deprecated; use CUDA_VISIBLE_DEVICES
 log_level = 'INFO'
 work_dir = None
-load_from = 'work_dirs/cmt_voxel001_res_800x320_pruner/Hard_Token_Prune_Decoder_FT/epoch_8_no_bbox_head.pth'
+load_from = 'paper_checkpoints/nuim_r50.pth'
 resume = False
-randomness = dict(seed=42, deterministic=False)
-custom_hooks = [dict(type='DisableObjectSampleHook', disable_after_epoch=15)]
+# load_from = '/workspace/mmdetection3d/work_dirs/cmt_voxel0075_vov_1600x640_cbgs/train_original_cmt_9epoch/epoch_9.pth'
+# resume=True
+# load_from='paper_checkpoints/cmt_converted_spconv.pth'
+# resume=False
+
+# optim_wrapper = dict(
+#     type='OptimWrapper',
+#     optimizer=dict(type='AdamW', lr=0.0001, weight_decay=0.01),
+#     clip_grad=dict(max_norm=35, norm_type=2))
+
+# optimizer_config = dict(
+#     type='CustomFp16OptimizerHook',
+#     loss_scale='dynamic',
+#     grad_clip=dict(max_norm=35, norm_type=2),
+#     custom_fp16=dict(pts_voxel_encoder=False, pts_middle_encoder=False, pts_bbox_head=False))
+# param_scheduler = [
+#     # 1. Linear Warmup
+#     dict(
+#         type='LinearLR',
+#         start_factor=0.001,    # Initial LR = lr * start_factor
+#         by_epoch=False,        # Count warmup in iterations (not epochs)
+#         begin=0,
+#         end=5000                # Warmup for the first 5000 iterations
+#     )
+# ]
+# momentum_config = dict(
+#     policy='cyclic',
+#     target_ratio=(0.8947368421052632, 1),
+#     cyclic_times=1,
+#     step_ratio_up=0.4)
+# checkpoint_config = dict(interval=1)
+# log_config = dict(
+#     interval=50,
+#     hooks=[dict(type='TextLoggerHook'),
+#            dict(type='TensorboardLoggerHook')])
+# dist_params = dict(backend='nccl')
+# log_level = 'INFO'
+# work_dir = None
+# load_from='paper_checkpoints/fcos3d_vovnet_imgbackbone-remapped.pth'
+# resume_from = None
+# workflow = [('train', 1)]
+# gpu_ids = range(0, 8)

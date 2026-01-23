@@ -700,7 +700,19 @@ class DualVoxelizationPreprocessor(Det3DDataPreprocessor):
             voxel_dict['controller_voxelization']['coors'] = coors
             voxel_dict['controller_voxelization']['num_points'] = num_points
             voxel_dict['controller_voxelization']['voxel_centers'] = voxel_centers
+        elif self.controller_voxel_type == 'dynamic':
+            coors = []
+            # dynamic voxelization only provide a coors mapping
+            for i, res in enumerate(points):
+                res_coors = self.controller_voxel_layer(res)
+                res_coors = F.pad(res_coors, (1, 0), mode='constant', value=i)
+                coors.append(res_coors)
+            voxels = torch.cat(points, dim=0)
+            coors = torch.cat(coors, dim=0)
+            voxel_dict['controller_voxelization'] = {}
+            voxel_dict['controller_voxelization']['voxels'] = voxels
+            voxel_dict['controller_voxelization']['coors'] = coors
         else:
-            raise Exception('Should only be hard voxelization for controller')
+            raise Exception('Should only be hard/dynamic voxelization for controller')
 
         return voxel_dict

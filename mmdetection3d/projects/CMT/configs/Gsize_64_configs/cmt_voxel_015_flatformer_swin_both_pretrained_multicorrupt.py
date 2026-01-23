@@ -1,3 +1,13 @@
+'''
+We train from the pretrained lidar checkpoint that does about 0.62 mAP
+Unfreeze lidar but make sure the learning rate is low
+Train image with modal masking to make sure that the image backbone actually learns
+
+Final result about 0.66 mAP, which is good w the limited image backbone resolution. 
+TODO test the image only performance, may be able to push more performance from this
+
+'''
+
 _base_ = ['/workspace/mmdetection3d/configs/_base_/default_runtime.py']
 custom_imports = dict(
     imports=['projects.BEVFusion.bevfusion', 'projects.UniM2AE', 'projects.CMT'], allow_failed_imports=False)
@@ -26,8 +36,15 @@ ida_aug_conf = {
     }
 
 metainfo = dict(classes=class_names)
-dataset_type = 'NuScenesDataset'
-data_root = 'data/nuscenes/'
+
+dataset_type = 'NuScenesCorruptDataset'
+data_root = '/workspace/mmdetection3d/data/nuscenes/'
+corruption_root = '/workspace/mmdetection3d/data/multicorrupt'  # Root directory where corrupted data is stored
+camera_corruption = None  # 'fog', 'snow', 'temporalmisalignment', 'brightness', 'dark', 'missingcamera', 'motionblur', None
+lidar_corruption = 'beamsreducing'  # 'pointsreducing', 'beamsreducing', 'snow', 'fog', 'spatialmisalignment', 'temporalmisalignment', 'motionblur', None
+severity_distribution = {3:1.0}  # Only sample severity 3
+
+
 data_prefix = dict(
     pts='samples/LIDAR_TOP',
     CAM_FRONT='samples/CAM_FRONT',
@@ -45,6 +62,7 @@ backend_args = None
 model = dict(
     type='CmtDetector',
     enable_modal_mask=True,
+    layerdrop_rate=0.2,
     data_preprocessor=dict(
         type='Det3DDataPreprocessor',
         voxel=True,
@@ -119,22 +137,7 @@ model = dict(
         out_indices=[2, 3],
         with_cp=False,
         convert_weights=True,
-        init_cfg=dict(
-            type='Pretrained',
-            checkpoint=  # noqa: E251
-            'https://github.com/SwinTransformer/storage/releases/download/v1.0.0/swin_tiny_patch4_window7_224.pth'  # noqa: E501
-        )
     ),
-    # LSSFPN is not a good fit for CMT
-    # img_neck=dict(
-    #     type='GeneralizedLSSFPN',
-    #     in_channels=[192, 384, 768],
-    #     out_channels=256,
-    #     start_level=0,
-    #     num_outs=3,
-    #     norm_cfg=dict(type='BN2d', requires_grad=True),
-    #     act_cfg=dict(type='ReLU', inplace=True),
-    #     upsample_cfg=dict(mode='bilinear', align_corners=False)),
 
     img_neck=dict(
         type='CPFPN',
@@ -182,6 +185,7 @@ model = dict(
                             dropout=0.1),
                         dict(
                             type='PETRMultiheadFlashAttention',
+                            #type='PETRMultiheadAttention',
                             embed_dims=256,
                             num_heads=8,
                             dropout=0.1),
@@ -322,14 +326,14 @@ test_pipeline = [
         meta_keys=[
             'cam2img', 'ori_cam2img', 'lidar2cam', 'lidar2img', 'cam2lidar', 
             'ori_lidar2img', 'img_aug_matrix', 'box_type_3d', 'sample_idx', 
-            'lidar_path', 'img_path', 'num_pts_feats'
+            'lidar_path', 'img_path', 'num_pts_feats', 'corruption_info'
         ]
     )
 
 ]
 
 train_dataloader = dict(
-    batch_size=14,
+    batch_size=12,
     num_workers=16,
     persistent_workers=True,
     sampler=dict(type='DefaultSampler', shuffle=True),
@@ -350,7 +354,7 @@ train_dataloader = dict(
             box_type_3d='LiDAR')))
 val_dataloader = dict(
     batch_size=1,
-    num_workers=4,
+    num_workers=12,
     persistent_workers=True,
     drop_last=False,
     sampler=dict(type='DefaultSampler', shuffle=False),
@@ -361,10 +365,17 @@ val_dataloader = dict(
         pipeline=test_pipeline,
         metainfo=metainfo,
         modality=input_modality,
-        data_prefix=data_prefix,
         test_mode=True,
-        box_type_3d='LiDAR',
-        backend_args=backend_args))
+        data_prefix=data_prefix,
+        lidar_corruption=lidar_corruption,
+        camera_corruption=camera_corruption,
+        corruption_root=corruption_root,
+        use_valid_flag=True,
+        severity_distribution = severity_distribution,
+        return_corruption_info = True,
+        # we use box_type_3d='LiDAR' in kitti and nuscenes dataset
+        # and box_type_3d='Depth' in sunrgbd and scannet dataset.
+        box_type_3d='LiDAR'))
 test_dataloader = val_dataloader
 
 val_evaluator = dict(
@@ -380,30 +391,26 @@ test_evaluator = val_evaluator
 param_scheduler = [
     dict(
         type='OneCycleLR',
-        total_steps=20,            # Total epochs
+        total_steps=12,            # Total epochs
         by_epoch=True,             # It's an epoch-based scheduler
         eta_max=0.0001,            # Max LR
         pct_start=0.1,             # Max at epoch 2
         div_factor=8.0,            # Matches target_ratio=(8, ...)
-        final_div_factor=1e4,      # Standard decay
+        final_div_factor=1e2,      # Standard decay
         convert_to_iter_based=True # Update every iteration, not just epoch end
     )
 ]
 
 # runtime settings
-train_cfg = dict(by_epoch=True, max_epochs=20, val_interval=1)
+train_cfg = dict(by_epoch=True, max_epochs=12, val_interval=1)
 val_cfg = dict()
 test_cfg = dict()
 
+# For the lidar components, set a smaller LR so they dont get overwritten at the start
 optim_wrapper = dict(
     type='AmpOptimWrapper',
     optimizer=dict(type='AdamW', lr=0.0001, weight_decay=0.01),
     clip_grad=dict(max_norm=35, norm_type=2),
-    paramwise_cfg=dict(
-        custom_keys={
-            'pts_bbox_head': dict(lr_mult=0.01),
-        }
-    )
 )
 
 
@@ -414,11 +421,7 @@ default_hooks = dict(
     checkpoint=dict(type='CheckpointHook', interval=1))
 
 custom_hooks = [
-    dict(type='DisableObjectSampleHook', disable_after_epoch=15),
-    dict(
-        type='FreezeLayersHook',
-        train_module_names=['pts_bbox_head', 'img_backbone', 'img_neck'] # The exact name of your new module in the model
-    ),
+    dict(type='FreezeSpecificModuleHook', freeze_names=['img_backbone', 'pts_middle_encoder'])
 ]
 
 randomness = dict(
@@ -427,7 +430,7 @@ randomness = dict(
     # deterministic=True
 )
 
-find_unused_parameters=True
+find_unused_parameters=True # If we do modal dropping find_unused_parameters must be true or else it throws error
 
 resume = False
-load_from='work_dirs/cmt_voxel_015_flatformer/epoch_20.pth'
+load_from='/workspace/mmdetection3d/unified_unimodal_layerdrop.pth' # Load the weights from the flatformer

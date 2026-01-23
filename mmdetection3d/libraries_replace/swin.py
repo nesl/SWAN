@@ -456,7 +456,8 @@ class SwinBlockSequence(BaseModule):
     def forward(self, x, hw_shape, retained_layer_list=None, controller_training=False):
         for i, block in enumerate(self.blocks):
             # If list does not exist OR and the value is 1 OR controller is training
-            if controller_training or retained_layer_list is None or retained_layer_list[i]:
+            # Retained layer list can either be controller decided (B_size, N), or (1, N) for ordinary layerdrop
+            if controller_training or retained_layer_list is None or retained_layer_list[0][i]:
                 x_new = block(x, hw_shape)
                 if controller_training:
                     x = x * (1 - retained_layer_list[:, i]) + x_new * retained_layer_list[:, i]
@@ -763,7 +764,8 @@ class SwinTransformer(BaseModule):
         for i, stage in enumerate(self.stages):
             stage_layer_list = None
             if retained_layer_list is not None:
-                stage_layer_list = retained_layer_list[current_layer:current_layer + len(stage.blocks)]
+                # We will always have a 2D tensor. Regardless of layerdrop, full dropout, controller, or testing
+                stage_layer_list = retained_layer_list[:, current_layer:current_layer + len(stage.blocks)]
                 current_layer += len(stage.blocks)
 
             x, hw_shape, out, out_hw_shape = stage(x, hw_shape, stage_layer_list, controller_training)
