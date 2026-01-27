@@ -164,10 +164,19 @@ class Det3DDataPreprocessor(DetDataPreprocessor):
         Returns:
             dict: Data in the same format as the model input.
         """
+
         if 'img' in data['inputs']:
             batch_pad_shape = self._get_pad_shape(data)
 
+        # start = torch.cuda.Event(enable_timing=True)
+        # end = torch.cuda.Event(enable_timing=True)
+        # start.record()
         data = self.collate_data(data)
+
+        # end.record()
+        # torch.cuda.synchronize()
+        # print("Elapsed:", start.elapsed_time(end))
+
         inputs, data_samples = data['inputs'], data['data_samples']
         batch_inputs = dict()
 
@@ -177,6 +186,7 @@ class Det3DDataPreprocessor(DetDataPreprocessor):
             if self.voxel:
                 voxel_dict = self.voxelize(inputs['points'], data_samples)
                 batch_inputs['voxels'] = voxel_dict
+
 
         if 'imgs' in inputs:
             imgs = inputs['imgs']
@@ -676,6 +686,7 @@ class DualVoxelizationPreprocessor(Det3DDataPreprocessor):
 
         voxel_dict['voxels'] = voxels
         voxel_dict['coors'] = coors
+
 
         if self.controller_voxel_type == 'hard':
             voxels, coors, num_points, voxel_centers = [], [], [], []

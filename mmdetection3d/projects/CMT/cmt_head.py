@@ -510,6 +510,7 @@ class CmtHead(BaseModule):
         bev_query_embeds, rv_query_embeds = self.query_embed(reference_points, img_metas)
         query_embeds = bev_query_embeds + rv_query_embeds
 
+        
         outs_dec, _ = self.transformer(
                             x, x_img, query_embeds,
                             bev_pos_embeds, rv_pos_embeds,
@@ -518,6 +519,7 @@ class CmtHead(BaseModule):
                             img_mask=img_mask
                         )
 
+        
         outs_dec = torch.nan_to_num(outs_dec)
 
         reference = inverse_sigmoid(reference_points.clone())

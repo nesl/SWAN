@@ -67,6 +67,7 @@ class CmtTransformer(BaseModule):
                 xavier_init(m, distribution='uniform')
         self._is_init = True
 
+    # If we are doing hard selection, we have different selections per batch
     def compact_and_pad(self, data, mask):
         """
         Args:
@@ -125,21 +126,29 @@ class CmtTransformer(BaseModule):
                       [bs, embed_dims, h, w].
         """
         bs, c, h, w = x.shape
-
         bev_memory = rearrange(x, "bs c h w -> (h w) bs c") # [bs, n, c, h, w] -> [n*h*w, bs, c]
         rv_memory = rearrange(x_img, "(bs v) c h w -> (v h w) bs c", bs=bs)
         bev_pos_embed = bev_pos_embed.unsqueeze(1).repeat(1, bs, 1) # [bs, n, c, h, w] -> [n*h*w, bs, c]
         rv_pos_embed = rearrange(rv_pos_embed, "(bs v) h w c -> (v h w) bs c", bs=bs)
         
+
+        # start = torch.cuda.Event(enable_timing=True)
+        # end = torch.cuda.Event(enable_timing=True)
+        # start.record()
+        # If we provide either pts_mask or img_mask, it is hard masking
         if pts_mask is not None:
             pts_mask = rearrange(pts_mask,  "bs 1 h w -> (h w) bs")
             bev_memory = self.compact_and_pad(bev_memory, pts_mask)
             bev_pos_embed = self.compact_and_pad(bev_pos_embed, pts_mask)
-        
         if img_mask is not None:
             img_mask = rearrange(img_mask, "(bs v) 1 h w -> (v h w) bs", bs=bs)
             rv_memory = self.compact_and_pad(rv_memory, img_mask)
             rv_pos_embed = self.compact_and_pad(rv_pos_embed, img_mask)
+        
+        # end.record()
+        # torch.cuda.synchronize()
+        # with open('compact_and_pad.txt', 'a') as handle:
+        #     print('Elapsed:', start.elapsed_time(end), file=handle)
             
         memory, pos_embed = torch.cat([bev_memory, rv_memory], dim=0), torch.cat([bev_pos_embed, rv_pos_embed], dim=0)
         query_embed = query_embed.transpose(0, 1)  # [num_query, dim] -> [num_query, bs, dim]
@@ -164,7 +173,7 @@ class CmtTransformer(BaseModule):
             reg_branch=reg_branch,
             )
         out_dec = out_dec.transpose(1, 2)
-        return  out_dec, memory
+        return out_dec, memory
 
 
 @MODELS.register_module()
