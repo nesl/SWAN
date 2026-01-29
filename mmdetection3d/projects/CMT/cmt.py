@@ -12,6 +12,7 @@ import torch.nn.functional as F
 import numpy as np
 
 from mmdet3d.models.voxel_encoders import DynamicVFE
+from .cmt_utils import DynamicVFE_Linear
 from mmdet3d.structures import bbox3d2result
 from mmdet3d.models.detectors.mvx_two_stage import MVXTwoStageDetector
 from ..UniM2AE.sst_models import DynamicVFE_New
@@ -19,6 +20,7 @@ from ..UniM2AE.sst_models import DynamicVFE_New
 from .cmt_utils.grid_mask import GridMask
 from mmdet3d.registry import MODELS
 import torch.nn as nn
+from mmengine.logging import MessageHub
 
 '''
 Top level CMT model
@@ -100,7 +102,7 @@ class CmtDetector(MVXTwoStageDetector):
                 """Extract features of points."""
 
                 # Depending on the type of voxel encoder, we pass it different parameters
-                if isinstance(self.pts_voxel_encoder, DynamicVFE_New) or isinstance(self.pts_voxel_encoder, DynamicVFE):
+                if isinstance(self.pts_voxel_encoder, (DynamicVFE_New, DynamicVFE, DynamicVFE_Linear)) :
                     voxel_features, coors, low_level_point_feature, indices = self.pts_voxel_encoder(voxels, coors)
                 else:
                     voxel_features = self.pts_voxel_encoder(voxels, voxel_dict['num_points'], coors)
@@ -115,6 +117,7 @@ class CmtDetector(MVXTwoStageDetector):
                     retained_layers = self.test_lidar_retained_layers
 
                 # Middle encoder is the FlatFormer model
+
                 x = self.pts_middle_encoder(voxel_features, coors, batch_size, retained_layers)
                 x = self.pts_backbone(x)
                 if self.with_pts_neck:
@@ -144,13 +147,17 @@ class CmtDetector(MVXTwoStageDetector):
              tuple: Two elements in tuple arrange as
              image features and point cloud features.
         """
+        message_hub = MessageHub.get_current_instance()
+        current_epoch = message_hub.get_info('epoch')
+
         voxel_dict = batch_inputs_dict.get('voxels', None)
         imgs = batch_inputs_dict.get('imgs', None)
+
         points = batch_inputs_dict.get('points', None)
 
         drop_all_lidar_layers, drop_all_img_layers = False, False
-        if self.training and self.enable_modal_mask:
-            # Modal mask by removing lidar with 50% probability during training, do not do this during inference
+        if self.training and current_epoch > 8 and self.enable_modal_mask:
+            # Force full modality dropout
             if torch.rand(1).item() < 0.3:
                 drop_all_lidar_layers = True
             elif torch.rand(1).item() < 0.2:
@@ -164,12 +171,12 @@ class CmtDetector(MVXTwoStageDetector):
             batch_input_metas=batch_input_metas,
             drop_all_lidar_layers=drop_all_lidar_layers)
         
-        # TODO: Drop the pts_feats to force the model to actually focus on image features
+        # # TODO: Drop the pts_feats to force the model to actually focus on image features
+        if self.training and current_epoch <= 8 and self.enable_modal_mask:
+            modal_mask = (torch.rand(pts_feats[0].shape[0]) > 0.5).int()
+            modal_mask = modal_mask.to(pts_feats[0].device)
+            pts_feats = [item * modal_mask[:, None, None, None] for item in pts_feats]
 
-        
-        # Remove lidar during testing, see img mAP
-        # if not self.training:
-        #     pts_feats = [item * 0.0 for item in pts_feats]
 
         return (img_feats, pts_feats)
 

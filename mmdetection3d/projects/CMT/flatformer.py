@@ -336,7 +336,6 @@ class FlatFormer(nn.Module):
     def forward(self, x, coords, batch_size, retained_layer_list=None):
         pe = self.embedding(coords, x.dtype)
         mappings = self.mapping(coords, batch_size)
-
         for i, block in enumerate(self.block_list):
             # Chunk the list four at a time for each block
             if retained_layer_list is not None:
