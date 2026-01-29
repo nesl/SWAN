@@ -453,12 +453,17 @@ class SwinBlockSequence(BaseModule):
 
         self.downsample = downsample
     # list of 0, 1's where 0 means a layer is dropped and 1 is layer is kept
-    def forward(self, x, hw_shape, retained_layer_list=None):
+    def forward(self, x, hw_shape, retained_layer_list=None, controller_training=False):
         for i, block in enumerate(self.blocks):
-            # If list exists and the value is 0, skip this block
-            if retained_layer_list is not None and not retained_layer_list[i]:
-                continue
-            x = block(x, hw_shape)
+            # If list does not exist OR and the value is 1 OR controller is training
+            # Retained layer list can either be controller decided (B_size, N), or (1, N) for ordinary layerdrop
+            if controller_training or retained_layer_list is None or retained_layer_list[0][i]:
+                x_new = block(x, hw_shape)
+                if controller_training:
+                    x = x * (1 - retained_layer_list[:, i]) + x_new * retained_layer_list[:, i]
+                else:
+                    x = x_new
+
 
         if self.downsample:
             x_down, down_hw_shape = self.downsample(x, hw_shape)
@@ -747,7 +752,7 @@ class SwinTransformer(BaseModule):
             # load state_dict
             self.load_state_dict(state_dict, False)
 
-    def forward(self, x, retained_layer_list=None):
+    def forward(self, x, retained_layer_list=None, controller_training=False):
         x, hw_shape = self.patch_embed(x)
 
         if self.use_abs_pos_embed:
@@ -757,12 +762,13 @@ class SwinTransformer(BaseModule):
         outs = []
         current_layer = 0
         for i, stage in enumerate(self.stages):
+            stage_layer_list = None
             if retained_layer_list is not None:
-                stage_layer_list = retained_layer_list[current_layer:current_layer + len(stage.blocks)]
-                x, hw_shape, out, out_hw_shape = stage(x, hw_shape, stage_layer_list)
+                # We will always have a 2D tensor. Regardless of layerdrop, full dropout, controller, or testing
+                stage_layer_list = retained_layer_list[:, current_layer:current_layer + len(stage.blocks)]
                 current_layer += len(stage.blocks)
-            else:
-                 x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+
+            x, hw_shape, out, out_hw_shape = stage(x, hw_shape, stage_layer_list, controller_training)
 
             if i in self.out_indices:
                 norm_layer = getattr(self, f'norm{i}')

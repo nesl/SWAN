@@ -360,6 +360,7 @@ class LoadPointsFromMultiSweeps(BaseTransform):
         Returns:
             np.ndarray: An array containing point clouds data.
         """
+
         try:
             pts_bytes = get(pts_filename, backend_args=self.backend_args)
             points = np.frombuffer(pts_bytes, dtype=np.float32)

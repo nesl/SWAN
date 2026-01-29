@@ -265,7 +265,6 @@ class PETRMultiheadFlashAttention(BaseModule):
             if self.batch_first is False, else
             [bs, num_queries embed_dims].
         """
-
         if key is None:
             key = query
         if value is None:
@@ -399,9 +398,9 @@ class PETRTransformerDecoderLayer(BaseTransformerLayer):
             norm_cfg=norm_cfg,
             ffn_num_fcs=ffn_num_fcs,
             **kwargs)
-        assert len(operation_order) == 6
-        assert set(operation_order) == set(
-            ['self_attn', 'norm', 'cross_attn', 'ffn'])
+        #assert len(operation_order) == 6   The purpose of this is to force us to use this as a decoder, but I can use this as a Transformer Encoder as well
+        # assert set(operation_order) == set(
+        #     ['self_attn', 'norm', 'cross_attn', 'ffn'])
         self.use_checkpoint = with_cp
     
     def _forward(self, 

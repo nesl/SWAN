@@ -6,10 +6,6 @@ and our decoder attention
 '''
 
 
-
-
-
-
 # Copyright (c) 2023 megvii-model. All Rights Reserved.
 import torch
 import torch.nn as nn

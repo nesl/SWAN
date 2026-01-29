@@ -27,7 +27,7 @@ class NuScenesCorruptDataset(NuScenesDataset):
             Defaults to '/data/multicorrupt'.
         severity_distribution (dict or None): Probability distribution for severities.
             Example: {1: 0.33, 2: 0.33, 3: 0.34} for uniform distribution.
-            If None, uses uniform distribution across [1, 2, 3].
+            If None, uses uniform distribution across [0, 1, 2, 3].
             Defaults to None.
         fixed_severity (int or None): If set, always use this severity level.
             Overrides severity_distribution. Defaults to None.
@@ -73,23 +73,23 @@ class NuScenesCorruptDataset(NuScenesDataset):
 
         # Setup severity distribution
         if fixed_severity is not None:
-            assert fixed_severity in [1, 2, 3], \
-                f"fixed_severity must be 1, 2, or 3, got {fixed_severity}"
+            assert fixed_severity in [0, 1, 2, 3], \
+                f"fixed_severity must be 0, 1, 2, or 3, got {fixed_severity}"
             self.severity_probs = {fixed_severity: 1.0}
         elif severity_distribution is not None:
             self._validate_severity_distribution(severity_distribution)
             self.severity_probs = severity_distribution
         else:
             # Default: uniform distribution
-            self.severity_probs = {1: 1/3, 2: 1/3, 3: 1/3}
+            self.severity_probs = {0 : 1/4, 1: 1/4, 2: 1/4, 3: 1/4}
 
         # Call parent constructor
         super().__init__(**kwargs)
 
     def _validate_severity_distribution(self, dist: Dict[int, float]) -> None:
         """Validate severity probability distribution."""
-        assert all(k in [1, 2, 3] for k in dist.keys()), \
-            "Severity levels must be 1, 2, or 3"
+        assert all(k in [0, 1, 2, 3] for k in dist.keys()), \
+            "Severity levels must be 0, 1, 2, or 3"
         assert all(0 <= v <= 1 for v in dist.values()), \
             "Probabilities must be between 0 and 1"
         assert abs(sum(dist.values()) - 1.0) < 1e-6, \
@@ -157,6 +157,17 @@ class NuScenesCorruptDataset(NuScenesDataset):
                         self.lidar_corruption,
                         lidar_severity
                     )
+                    
+                    if 'lidar_sweeps' in info:
+                        for i in range(len(info['lidar_sweeps'])):
+                            full_orig_path = info['lidar_sweeps'][i]['lidar_points']['lidar_path']
+                            specific_sample_path = full_orig_path.split('nuscenes/')[-1]
+                            info['lidar_sweeps'][i]['lidar_points']['lidar_path'] = self.get_corruption_path(
+                                specific_sample_path,
+                                self.lidar_corruption,
+                                lidar_severity
+                            )
+
                 else:
                     # Use original LiDAR data
                     info['lidar_points']['lidar_path'] = osp.join(
@@ -230,6 +241,16 @@ class NuScenesCorruptDataset(NuScenesDataset):
                         full_original_path,
                         self.lidar_corruption,
                         lidar_severity)
+                    
+                    if 'lidar_sweeps' in info:
+                        for i in range(len(info['lidar_sweeps'])):
+                            full_orig_path = info['lidar_sweeps'][i]['lidar_points']['lidar_path']
+                            specific_sample_path = full_orig_path.split('nuscenes/')[-1]
+                            info['lidar_sweeps'][i]['lidar_points']['lidar_path'] = self.get_corruption_path(
+                                specific_sample_path,
+                                self.lidar_corruption,
+                                lidar_severity
+                            )
                 else:
                     info['lidar_points']['lidar_path'] = osp.join(
                         self.data_prefix.get('pts', ''),
@@ -237,7 +258,7 @@ class NuScenesCorruptDataset(NuScenesDataset):
                     )
 
             # Process camera data
-                        # Process camera data
+            # Process camera data
             if self.modality['use_camera']:
                 for cam_id, img_info in info['images'].items():
                     if 'img_path' in img_info:
@@ -266,14 +287,12 @@ class NuScenesCorruptDataset(NuScenesDataset):
             # and properly process the info dict with corruption paths
             from mmdet3d.datasets.det3d_dataset import Det3DDataset
             data_info = Det3DDataset.parse_data_info(self, info)
-            
             # Add corruption metadata to the processed data_info
             if self.return_corruption_info:
                 data_info['corruption_info'] = {
                     'lidar_corruption': self.lidar_corruption,
-                    'lidar_severity': lidar_severity,
+                    'lidar_severity': lidar_severity if lidar_severity is not None else 0,
                     'camera_corruption': self.camera_corruption,
-                    'camera_severity': camera_severity,
+                    'camera_severity': camera_severity if camera_severity is not None else 0,
                 }
-            
             return data_info

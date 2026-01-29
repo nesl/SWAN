@@ -773,7 +773,6 @@ class GlobalRotScaleTransAll(object):
                 input_dict['lidar2cam'][i] = l2c
                 input_dict['cam2img'][i] = c2i_3x3
 
-
         if 'bbox3d_fields' not in input_dict:
             input_dict['bbox3d_fields'] = []
             if 'gt_bboxes_3d' in input_dict:

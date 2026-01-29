@@ -1,22 +1,25 @@
 '''
-Swin Transformer Training with LayerDrop
-Achieves NDS: 0.4217  mAP: 0.3439 at Epoch 50
-Layerdropped results to come
+We train from the pretrained lidar checkpoint that does about 0.62 mAP
+Unfreeze lidar but make sure the learning rate is low
+Train image with modal masking to make sure that the image backbone actually learns
+
+Final result about 0.66 mAP, which is good w the limited image backbone resolution. 
+TODO test the image only performance, may be able to push more performance from this
 
 '''
 
-_base_ = ['../../../configs/_base_/default_runtime.py']
+
+
+
+_base_ = ['/workspace/mmdetection3d/configs/_base_/default_runtime.py']
 custom_imports = dict(
     imports=['projects.BEVFusion.bevfusion', 'projects.UniM2AE', 'projects.CMT'], allow_failed_imports=False)
 
-# These are point cloud specific, kept them anyways since some downstream components refer to them, unsure if we can remove
 voxel_size = (0.15, 0.15, 8) 
 grid_size = (720, 720, 1)
 window_shape=(16, 16, 1)
 sparse_shape = (720, 720, 1)
 out_size_factor = 4
-
-# Change the point cloud range slightly smaller to prevent out of bounds errors due to strange rounding
 point_cloud_range = [-54.0, -54.0, -5.0, 53.95, 53.95, 2.95]
 class_names = [
     'car', 'truck', 'construction_vehicle', 'bus', 'trailer', 'barrier',
@@ -51,14 +54,68 @@ input_modality = dict(use_lidar=True, use_camera=True)
 
 backend_args = None
 
+
 model = dict(
     type='CmtDetector',
+    enable_modal_mask=True,
     data_preprocessor=dict(
         type='Det3DDataPreprocessor',
+        voxel=True,
+        voxel_type='dynamic',  # <--- here
+        voxel_layer=dict(
+            max_num_points=-1,
+            point_cloud_range=point_cloud_range,
+            voxel_size=voxel_size,
+            max_voxels=(-1, -1)
+        ),
     ),
-    layerdrop_rate=0.2,
+    pts_voxel_encoder=dict(
+        type='DynamicVFE_New',
+        in_channels=5,
+        feat_channels=[64, 128],
+        with_distance=False,
+        voxel_size=voxel_size,
+        with_cluster_center=True,
+        with_voxel_center=True,
+        return_gt_points=True,
+        point_cloud_range=point_cloud_range,
+        norm_cfg=dict(type='naiveSyncBN1d', eps=1e-3, momentum=0.01)
+    ),
+    pts_middle_encoder=dict(
+        type='FlatFormer',
+        in_channels=128,
+        num_heads=8,
+        num_blocks=2,
+        activation="gelu",
+        window_shape=window_shape,
+        sparse_shape=sparse_shape,
+        output_shape=[sparse_shape[0], sparse_shape[1]],
+        pos_temperature=10000,
+        normalize_pos=False,
+        group_size=64,
+    ),
+    
+    pts_backbone=dict(
+        type='SECOND',
+        in_channels=128,
+        out_channels=[64, 128],
+        layer_nums=[3, 3],
+        layer_strides=[2, 2],
+        conv_cfg=dict(type='Conv2d', bias=False),
+        norm_cfg=dict(type='naiveSyncBN2d', eps=1e-3, momentum=0.01),
+    ),
+    pts_neck=dict(
+        type='SECONDFPN',
+        norm_cfg=dict(type='naiveSyncBN2d', eps=1e-3, momentum=0.01),
+        in_channels=[64, 128],
+        upsample_strides=[0.5, 1],
+        out_channels=[256, 256]
+    ),
    
+
     # BEGIN CAMERA COMPONENTS
+
+    # Hopefully I can override w my saved model parameters...
     img_backbone = dict(
         type='mmdet.SwinTransformer',
         embed_dims=96,
@@ -79,7 +136,6 @@ model = dict(
             type='Pretrained',
             checkpoint=  # noqa: E251
             'https://github.com/SwinTransformer/storage/releases/download/v1.0.0/swin_tiny_patch4_window7_224.pth'  # noqa: E501
-            # This is a default pretrained swintransformer, NOT OPTIMIZED FOR NUSCENES
         )
     ),
 
@@ -90,7 +146,7 @@ model = dict(
         num_outs=2),
 
     pts_bbox_head=dict(
-        type='CmtImageHead',
+        type='CmtHead',
         in_channels=512,
         hidden_dim=256,
         downsample_scale=out_size_factor,
@@ -113,7 +169,7 @@ model = dict(
         separate_head=dict(
             type='SeparateTaskHead', init_bias=-2.19, final_kernel=1),
         transformer=dict(
-            type='CmtImageTransformer',
+            type='CmtTransformer',
             decoder=dict(
                 type='PETRTransformerDecoder',
                 return_intermediate=True,
@@ -155,6 +211,7 @@ model = dict(
             dataset='nuScenes',
             assigner=dict(
                 type='HungarianAssigner3D_CMT',
+                # cls_cost=dict(type='ClassificationCost', weight=2.0),
                 cls_cost=dict(type='mmdet.FocalLossCost', weight=2.0),
                 reg_cost=dict(type='BBox3DL1Cost', weight=0.25),
                 iou_cost=dict(type='IoU3DCost_CMT', weight=0.0), # Fake cost. This is just to make it compatible with DETR head. 
@@ -185,7 +242,7 @@ model = dict(
 )
 
 
-# Keep the lidar loading since strange things happen when it is removed
+
 train_pipeline = [
     dict(
         type='LoadPointsFromFile',
@@ -248,9 +305,16 @@ test_pipeline = [
     # 2. Load Images (Same as before)
     dict(type='LoadMultiViewImageFromFiles'),
     
+    # 3. Standard Transforms (Flattened - removed MultiScaleFlipAug3D wrapper)
+    # The 'GlobalRotScaleTrans' with 0/1 does nothing, so we can verify weights 
+    # more safely by removing it to avoid any rounding errors.
+    
+    # dict(type='RandomFlip3D'), # Removed because flip=False in your config
+    
     dict(type='ResizeCropFlipImage', data_aug_conf=ida_aug_conf, training=False),
     
     dict(type='NormalizeMultiviewImage', **img_norm_cfg),
+    dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
     
     dict(type='PadMultiViewImage', size_divisor=32),
     
@@ -268,11 +332,10 @@ test_pipeline = [
 ]
 
 train_dataloader = dict(
-    batch_size=20,
+    batch_size=9,
     num_workers=16,
     persistent_workers=True,
     sampler=dict(type='DefaultSampler', shuffle=True),
-    # CBGSDataset repeats samples that are more difficult
     dataset=dict(
         type='CBGSDataset',
         dataset=dict(
@@ -320,36 +383,50 @@ test_evaluator = val_evaluator
 param_scheduler = [
     dict(
         type='OneCycleLR',
-        total_steps=50,            # Total epochs
+        total_steps=20,            # Total epochs
         by_epoch=True,             # It's an epoch-based scheduler
         eta_max=0.0001,            # Max LR
-        pct_start=0.1,             # Max at epoch 8
+        pct_start=0.1,             # Max at epoch 2
         div_factor=8.0,            # Matches target_ratio=(8, ...)
-        final_div_factor=1e4,      # Standard decay
+        final_div_factor=1e2,      # Standard decay
         convert_to_iter_based=True # Update every iteration, not just epoch end
     )
 ]
 
 # runtime settings
-train_cfg = dict(by_epoch=True, max_epochs=50, val_interval=1)
+train_cfg = dict(by_epoch=True, max_epochs=20, val_interval=1)
 val_cfg = dict()
 test_cfg = dict()
 
+# For the lidar components, set a smaller LR so they dont get overwritten at the start
 optim_wrapper = dict(
     type='AmpOptimWrapper',
-    optimizer=dict(type='AdamW', lr=0.0001, weight_decay=0.01), # THE LR HERE IS OVERWRITTEN
-    clip_grad=dict(max_norm=35, norm_type=2))
+    optimizer=dict(type='AdamW', lr=0.0001, weight_decay=0.01),
+    clip_grad=dict(max_norm=35, norm_type=2),
+    paramwise_cfg=dict(
+        custom_keys={
+            'pts_bbox_head': dict(lr_mult=0.01), # bbox head is tuned for lidar performance right now
+            'pts_middle_encoder': dict(lr_mult=0.01),
+            'pts_backbone': dict(lr_mult=0.01),
+            'pts_neck':dict(lr_mult=0.01),
+        }
+    )
+)
 
 
 log_processor = dict(window_size=50)
 
 default_hooks = dict(
     logger=dict(type='LoggerHook', interval=50),
-    checkpoint=dict(type='CheckpointHook', interval=5))
+    checkpoint=dict(type='CheckpointHook', interval=1))
 
 randomness = dict(
     seed=100,
     diff_rank_seed=False,
     # deterministic=True
 )
-find_unused_parameters=True
+
+find_unused_parameters=True # If we do modal dropping find_unused_parameters must be true or else it throws error
+
+resume = False
+load_from='work_dirs/cmt_voxel_015_flatformer/epoch_20.pth' # Load the weights from the flatformer
