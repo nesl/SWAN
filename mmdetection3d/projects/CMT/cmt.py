@@ -462,7 +462,7 @@ class CmtDetector(MVXTwoStageDetector):
             img_mask = (self.img_pruner(img_feats[0]) + self.mask_bias_value).round()
             pts_feats[0] = points_mask * pts_feats[0]
             img_feats = [img_mask * img_feats[0]]
-        import pdb; pdb.set_trace()
+
         if self.use_hard_pruning:
             outs = self.pts_bbox_head(pts_feats, img_feats, batch_input_metas, img_mask=img_mask, pts_mask=points_mask)
         else:
