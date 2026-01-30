@@ -56,7 +56,6 @@ model = dict(
         voxel_size=voxel_size,
         with_cluster_center=True,
         with_voxel_center=True,
-        return_gt_points=True,
         point_cloud_range=point_cloud_range,
         norm_cfg=dict(type='naiveSyncBN1d', eps=1e-3, momentum=0.01)
     ),

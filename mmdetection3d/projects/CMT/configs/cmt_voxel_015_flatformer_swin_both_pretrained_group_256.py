@@ -21,6 +21,7 @@ window_shape=(16, 16, 1)
 sparse_shape = (720, 720, 1)
 out_size_factor = 4
 point_cloud_range = [-54.0, -54.0, -5.0, 53.95, 53.95, 2.95]
+# point_cloud_range = [-54.0, -54.0, -5.0, 54.0, 54.0, 3.0]
 class_names = [
     'car', 'truck', 'construction_vehicle', 'bus', 'trailer', 'barrier',
     'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone'
@@ -71,14 +72,13 @@ model = dict(
         ),
     ),
     pts_voxel_encoder=dict(
-        type='DynamicVFE_New',
+        type='DynamicVFE_Efficient',
         in_channels=5,
         feat_channels=[64, 128],
         with_distance=False,
         voxel_size=voxel_size,
         with_cluster_center=True,
         with_voxel_center=True,
-        return_gt_points=True,
         point_cloud_range=point_cloud_range,
         norm_cfg=dict(type='naiveSyncBN1d', eps=1e-3, momentum=0.01)
     ),
