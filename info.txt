@@ -1,6 +1,7 @@
 docker run -d --gpus all --shm-size=150gb \
     -v /home/jason/Desktop/Dyn_MMOT/CustomDet/Modern_UniM2AE/mmdetection3d:/workspace/mmdetection3d \
     -v /mnt/ssd_8t/jason/nuScenes/:/workspace/mmdetection3d/data/nuscenes \
+    -v /mnt/ssd_8t/jason/multicorrupt/:/workspace/mmdetection3d/data/multicorrupt \
     --name mmdet_container \
     mmdet:latest \
     sleep infinity
