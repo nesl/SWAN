@@ -422,7 +422,7 @@ default_hooks = dict(
 
 randomness = dict(
     seed=100,
-    diff_rank_seed=False,
+    diff_rank_seed=True,
     # deterministic=True
 )
 

@@ -58,6 +58,7 @@ backend_args = None
 model = dict(
     type='CmtDetector',
     enable_modal_mask=True,
+    enable_lidar_masking=True,
     layerdrop_rate=0.2,
     data_preprocessor=dict(
         type='Det3DDataPreprocessor',
@@ -412,7 +413,7 @@ custom_hooks = [
 
 randomness = dict(
     seed=100,
-    diff_rank_seed=False,
+    diff_rank_seed=True,
     # deterministic=True
 )
 

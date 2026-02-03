@@ -29,13 +29,10 @@ ida_aug_conf = {
 
 metainfo = dict(classes=class_names)
 
-dataset_type = 'NuScenesCorruptDataset'
+dataset_type = 'NuScenesDiverseCorruptDataset'
 data_root = '/workspace/mmdetection3d/data/nuscenes/'
 corruption_root = '/workspace/mmdetection3d/data/multicorrupt'  # Root directory where corrupted data is stored
-camera_corruption = 'dark'  # 'fog', 'snow', 'temporalmisalignment', 'brightness', 'dark', 'missingcamera', 'motionblur', None
-lidar_corruption = 'beamsreducing'  # 'pointsreducing', 'beamsreducing', 'snow', 'fog', 'spatialmisalignment', 'temporalmisalignment', 'motionblur', None
-severity_distribution = {0:0.5, 3:0.5}  # Only sample severity 3
-
+corruptions = ['beamsreducing', 'dark', 'snow', 'fog', 'motionblur']
 
 data_prefix = dict(
     pts='samples/LIDAR_TOP',
@@ -56,20 +53,11 @@ model = dict(
     use_grid_mask=True,
     controller = dict(
         type='ConvLayerController',
-        hard_voxelizer=dict(
-            type='DynamicVFE_New',
-            in_channels=5,
-            feat_channels=[64, 128],
-            with_distance=False,
-            voxel_size=[1, 1, 8],
-            point_cloud_range=point_cloud_range,
-            norm_cfg=dict(type='naiveSyncBN1d', eps=1e-3, momentum=0.01)
-        ),
         layer_budget=6
         # Use defaults for now
     ),
     data_preprocessor=dict(
-        type='DualVoxelizationPreprocessor',
+        type='Det3DDataPreprocessor',
         voxel=True,
         voxel_type='dynamic',  # <--- here
         voxel_layer=dict(
@@ -77,17 +65,10 @@ model = dict(
             point_cloud_range=point_cloud_range,
             voxel_size=voxel_size,
             max_voxels=(-1, -1)
-        ),
-        controller_voxel_type='dynamic',
-        controller_voxel_layer=dict(
-            max_num_points=-1,
-            point_cloud_range=point_cloud_range,
-            voxel_size=[1, 1, 8], # Use two meter large voxels, feature map is now about (54, 54),
-            max_voxels=(-1, -1) # Train, test, this is probably much larger than we will ever encounter
         )
     ),
     pts_voxel_encoder=dict(
-        type='DynamicVFE_New',
+        type='DynamicVFE_Efficient',
         in_channels=5,
         feat_channels=[64, 128],
         with_distance=False,
@@ -348,7 +329,7 @@ test_pipeline = [
 ]
 
 train_dataloader = dict(
-    batch_size=3,
+    batch_size=12,
     num_workers=12,
     persistent_workers=True,
     sampler=dict(type='DefaultSampler', shuffle=True),
@@ -362,12 +343,10 @@ train_dataloader = dict(
         modality=input_modality,
         test_mode=False,
         data_prefix=data_prefix,
-        lidar_corruption=lidar_corruption,
-        camera_corruption=camera_corruption,
+        corruptions=corruptions,
         corruption_root=corruption_root,
         use_valid_flag=True,
-        severity_distribution = severity_distribution,
-        return_corruption_info = True,
+        return_corruption_info=True,
         # we use box_type_3d='LiDAR' in kitti and nuscenes dataset
         # and box_type_3d='Depth' in sunrgbd and scannet dataset.
         box_type_3d='LiDAR'))
@@ -402,11 +381,9 @@ val_dataloader = dict(
         modality=input_modality,
         test_mode=True,
         data_prefix=data_prefix,
-        lidar_corruption=lidar_corruption,
-        camera_corruption=camera_corruption,
+        corruptions=corruptions,
         corruption_root=corruption_root,
         use_valid_flag=True,
-        severity_distribution = severity_distribution,
         return_corruption_info = True,
         # we use box_type_3d='LiDAR' in kitti and nuscenes dataset
         # and box_type_3d='Depth' in sunrgbd and scannet dataset.
@@ -423,20 +400,23 @@ test_evaluator = val_evaluator
 
 
 # runtime settings
-train_cfg = dict(by_epoch=True, max_epochs=1, val_interval=11)
+train_cfg = dict(by_epoch=True, max_epochs=3, val_interval=11)
 val_cfg = dict()
 test_cfg = dict()
 
 param_scheduler = [
     dict(
         type='LinearLR',
-        start_factor=1.0,      # Start at the base LR (0.001)
-        end_factor=0.001,      # Decay to 1/1000 of the base LR
-        begin=0,               # Start decay at iteration 0
-        end=3000,             # End decay at the final iteration (10k)
-        by_epoch=False         # Use iterations, not epochs
+        start_factor=1.0,     # Start at 100% of the current LR
+        end_factor=0.01,       # Gradually decay to 10% of the LR
+        by_epoch=True,
+        begin=0,             # Decay starts at the beginning of Epoch 12
+        end=3,
+        convert_to_iter_based=True
     )
 ]
+
+find_unused_parameters=True
 
 optim_wrapper = dict(
     type='AmpOptimWrapper',
@@ -451,15 +431,15 @@ custom_hooks = [
 log_processor = dict(window_size=50)
 
 default_hooks = dict(
-    logger=dict(type='LoggerHook', interval=50),
-    checkpoint=dict(type='CheckpointHook', interval=2))
+    logger=dict(type='LoggerHook', interval=50)
+)
 
 
 randomness = dict(
     seed=100,
-    diff_rank_seed=False,
+    diff_rank_seed=True,
     # deterministic=True
 )
 
 resume=False
-load_from= '/workspace/mmdetection3d/work_dirs/cmt_voxel_015_flatformer_swin_multicorrupt/epoch_8.pth'
+load_from= 'DUMMY_PATH_OVERRIDE'

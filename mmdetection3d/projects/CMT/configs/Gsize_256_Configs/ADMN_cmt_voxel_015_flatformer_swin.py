@@ -56,15 +56,10 @@ model = dict(
     use_grid_mask=True,
     controller = dict(
         type='ConvLayerController',
-        hard_voxelizer=dict(
-            type='HardSimpleVFE',
-            num_features=5,
-        ),
         layer_budget=10
-        # Use defaults for now
     ),
     data_preprocessor=dict(
-        type='DualVoxelizationPreprocessor',
+        type='Det3DDataPreprocessor',
         voxel=True,
         voxel_type='dynamic',  # <--- here
         voxel_layer=dict(
@@ -72,13 +67,6 @@ model = dict(
             point_cloud_range=point_cloud_range,
             voxel_size=voxel_size,
             max_voxels=(-1, -1)
-        ),
-        controller_voxel_type='hard',
-        controller_voxel_layer=dict(
-            max_num_points=20,
-            point_cloud_range = point_cloud_range,
-            voxel_size=[2, 2, 8], # Use two meter large voxels, feature map is now about (54, 54),
-            max_voxels=(30000, 40000) # Train, test, this is probably much larger than we will ever encounter
         )
     ),
     pts_voxel_encoder=dict(
@@ -425,7 +413,7 @@ default_hooks = dict(
 
 randomness = dict(
     seed=100,
-    diff_rank_seed=False,
+    diff_rank_seed=True,
     # deterministic=True
 )
 

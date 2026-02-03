@@ -9,6 +9,7 @@ from mmengine.model import BaseModule
 from mmdet3d.registry import MODELS
 from mmcv.cnn.bricks.transformer import TransformerLayerSequence
 import math
+from mmengine.dist import get_dist_info
 
 EPSILON = np.finfo(np.float32).tiny
 
@@ -111,45 +112,21 @@ class ConvLayerController(nn.Module):
     
     # Total layer refers to the total available compute budget
     # TODO CHANGE THIS back to 256
-    def __init__(self, hard_voxelizer, embed_dim=256, depth=4, num_heads=4, mlp_ratio=4, total_layers_img=12, total_layers_lidar=8, layer_budget=8):
+    def __init__(self, embed_dim=256, num_classes=6, total_layers_img=12, total_layers_lidar=8, layer_budget=8):
         super(ConvLayerController, self).__init__()
 
-        self.hard_voxelizer = MODELS.build(hard_voxelizer)
-        # Fuses the information together to output joint layer config of all modalities
-        # self.combiner_encoder = TransformerLayerSequence(
-        #     num_layers=depth,
-        #     transformerlayers = dict(
-        #         type='BaseTransformerLayer',
-        #         attn_cfgs=dict(
-        #             type='MultiheadAttention',
-        #             embed_dims = embed_dim,
-        #             num_heads = num_heads,
-        #         ),
-        #         ffn_cfgs=dict(
-        #             type='FFN',
-        #             embed_dims=embed_dim,
-        #             feedforward_channels=embed_dim * mlp_ratio,
-        #             num_fcs=2,
-        #             act_cfg=dict(type='ReLU', inplace=True)
-        #         ),
-        #         operation_order=('self_attn', 'norm', 'ffn', 'norm')
-        #     )
-        # )
-
         self.voxel_extractor = nn.Sequential(
-            nn.Conv2d(128, out_channels=64, kernel_size=3, stride=2),
+            nn.Conv2d(128, out_channels=64, kernel_size=3, stride=3),
             nn.BatchNorm2d(num_features=64),
+            nn.MaxPool2d(2, stride=2),
             nn.ReLU(),
 
-            nn.Conv2d(64, out_channels=64, kernel_size=3, stride=2),
-            nn.BatchNorm2d(num_features=64),
+            nn.Conv2d(64, out_channels=1, kernel_size=3, stride=3),
+            nn.BatchNorm2d(num_features=1),
+            nn.MaxPool2d(2, stride=2),
             nn.ReLU(),
-
-            nn.Conv2d(in_channels=64, out_channels=3, kernel_size=3, stride=2),
-            nn.BatchNorm2d(num_features=3),
-            nn.ReLU()
         )
-        self.voxel_adapter = nn.Linear(432, embed_dim//2)
+        self.voxel_adapter = nn.Linear(400, embed_dim//2)
 
         self.img_extractor = nn.Sequential(
             nn.Conv2d(3, out_channels=64, kernel_size=3, stride=3),
@@ -178,7 +155,7 @@ class ConvLayerController(nn.Module):
         self.noise_output = nn.Sequential(
             nn.Linear(embed_dim, 250),
             nn.ReLU(),
-            nn.Linear(250, 4) # We softmax over these three logits (clean, noisy lidar, noisy image)
+            nn.Linear(250, num_classes) # We softmax over these three logits (clean, noisy lidar, noisy image)
         )
         self.output_head.apply(init_weights) # init output head weights to be very small, this forces it to be responsive to the noise embedding value
         self.logits_memory = [] # Used during inference only
@@ -192,42 +169,29 @@ class ConvLayerController(nn.Module):
         return canvas
     
     # Temperature define peakiness of the gumbel softmax
-    def forward(self, voxel_dict, raw_image, flatformer_layers, temp=1, discretization_method = 'admn'):
-        controller_voxels = voxel_dict['controller_voxelization']['voxels']
-        controller_coors = voxel_dict['controller_voxelization']['coors']
-        #controller_num_points = voxel_dict['controller_voxelization']['num_points']
-        with torch.autocast('cuda', enabled=False):
-            voxel_features, controller_coors = self.hard_voxelizer(controller_voxels, controller_coors)
-
+    def forward(self, voxel_features, controller_coors, raw_image, flatformer_layers, temp=1, discretization_method = 'admn'):
         B = raw_image.shape[0]
-        bev_grid = self.manual_scatter(voxel_features, controller_coors, B, (108, 108), 128)
+
+        bev_grid = self.manual_scatter(voxel_features, controller_coors, B, (720, 720), 128)
+    
         voxel_noise_features = torch.reshape(self.voxel_extractor(bev_grid), (B, -1))
         voxel_noise_features = self.voxel_adapter(voxel_noise_features)
-
+        
         raw_image = rearrange(raw_image, 'b n c h w -> (b n) c h w')
         img_noise_features = self.img_extractor(raw_image)
         img_noise_features = torch.reshape(img_noise_features, (B, -1))
         img_noise_features = self.img_adapter(img_noise_features)
 
-        # conv_embeds = torch.cat([voxel_noise_features, img_noise_features], dim=1)
-        # B = conv_embeds.shape[0]
-        
-        # cls_tokens = self.cls.expand(B, -1, -1) 
-        # x = torch.cat((cls_tokens, conv_embeds), dim=1)
-        # x += positionalencoding1d(self.cls.shape[-1], x.shape[1])
-        # x = self.combiner_encoder(x)[:, 0] # Get CLS output
-
         joint_embed = torch.cat([voxel_noise_features, img_noise_features], dim=-1)
 
         logits = self.output_head(joint_embed) # logits are of shape B_size x 24 \
-        # First logit for each modality will ALWAYS be chosen, set it to -99 to avoid influencing the softmax too heavily
         
+        # First logit for each modality will ALWAYS be chosen, set it to -99 to avoid influencing the softmax too heavily
         logits[:, 0] = -99
         logits[:, flatformer_layers] = -99
 
         # Get the predicted noise for each of the modalities
         predicted_noise = self.noise_output(joint_embed) # b_size x 2 (img and depth)
-
         if discretization_method == 'admn':
             if self.training:
                 gumbel_samples = gumbel_softmax_sample(logits, temperature=temp, scale=0.01)
@@ -239,10 +203,11 @@ class ConvLayerController(nn.Module):
             discretized[:, flatformer_layers] = 1
             gumbel_samples = torch.reshape(gumbel_samples, (B, -1))
             logits = torch.reshape(logits, (B, -1))
-            print('\nLogits LiDAR:', logits[0][:flatformer_layers])
-            print('Logits Image:', logits[0][flatformer_layers:])
-            print('LiDAR:', discretized[0][:flatformer_layers])
-            print('Image:',  discretized[0][flatformer_layers:])
+            if get_dist_info()[0] == 0:
+                print('\nLogits LiDAR:', logits[0][:flatformer_layers])
+                print('Logits Image:', logits[0][flatformer_layers:])
+                print('LiDAR:', discretized[0][:flatformer_layers])
+                print('Image:',  discretized[0][flatformer_layers:])
             return gumbel_samples + (discretized - gumbel_samples).detach(), predicted_noise
         elif discretization_method == 'straight_through': # No softmax sampling used
             gumbel_samples = logits

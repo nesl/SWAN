@@ -29,13 +29,21 @@ from .cmt_utils.grid_mask import GridMask
 from mmdet3d.registry import MODELS
 import sys 
 from mmengine.logging import MessageHub
+from mmengine.dist import get_dist_info
 import torchvision
 
 # Define timing events
 start_event = torch.cuda.Event(enable_timing=True)
 end_event = torch.cuda.Event(enable_timing=True)
 
-file_handle = open('temp.txt', 'w')
+label_to_idx = {
+    'none':0,
+    'beamsreducing':1,
+    'dark':2,
+    'snow':3,
+    'fog':4,
+    'motionblur':5
+}
 
 def save_masked_grid(imgs, msk, output_path="masked_grid.png", alpha=0.5):
     """
@@ -102,6 +110,7 @@ class CmtDetector(MVXTwoStageDetector):
                  enable_pruning=False,
                  use_hard_pruning=False,
                  enable_modal_mask=False,
+                 enable_lidar_masking=False,
                  layerdrop_rate = 0.0,
                  test_img_retained_layers = None,
                  test_lidar_retained_layers = None,
@@ -112,6 +121,7 @@ class CmtDetector(MVXTwoStageDetector):
         self.grid_mask = GridMask(True, True, rotate=1, offset=False, ratio=0.5, mode=1, prob=0.7)
         # Modal mask and layerdrop are enabled together during training
         self.enable_modal_mask = enable_modal_mask
+        self.enable_lidar_masking = enable_lidar_masking
         self.layerdrop_rate = layerdrop_rate
 
         self.enable_pruning = enable_pruning
@@ -211,16 +221,10 @@ class CmtDetector(MVXTwoStageDetector):
         return img_feats
 
     
-    def extract_pts_feat(self, voxel_dict, controller_layers=None, drop_all_lidar_layers=False):
+    def extract_pts_feat(self, voxel_features, coors, controller_layers=None, drop_all_lidar_layers=False):
         if self.with_pts_backbone:
             # Keep operations in float32 to preseve voxelization accuracy
             with torch.autocast('cuda', enabled=False):
-                voxels = voxel_dict['voxels']
-                coors = voxel_dict['coors']
-                # No longer accounting for different voxel encoder options
-
-                voxel_features, coors = self.pts_voxel_encoder(voxels, coors)
-    
                 batch_size = coors[-1, 0] + 1
                 retained_layers = None
                 
@@ -278,40 +282,39 @@ class CmtDetector(MVXTwoStageDetector):
         voxel_dict = batch_inputs_dict.get('voxels', None)
         imgs = batch_inputs_dict.get('imgs', None)
 
-        points = batch_inputs_dict.get('points', None)
+        voxels = voxel_dict['voxels']
+        coors = voxel_dict['coors']
+        with torch.autocast('cuda', enabled=False):
+            voxel_features, coors = self.pts_voxel_encoder(voxels, coors)
         
         if 'corruption_info' in batch_input_metas[0]:
-            lidar_sev = torch.tensor([m['corruption_info']['lidar_severity'] > 0 for m in batch_input_metas])
-            cam_sev = torch.tensor([m['corruption_info']['camera_severity'] > 0 for m in batch_input_metas])
-
-            # 0: Both Clean, 1: Camera Only, 2: LiDAR Only, 3: Both Corrupted 
-            gt_corruption_labels = (lidar_sev.long() * 2) + cam_sev.long()
+            gt_corruption_labels = torch.tensor([label_to_idx[m['corruption_info']['lidar_corruption']] for m in batch_input_metas])
 
         drop_all_lidar_layers, drop_all_img_layers = False, False
         modal_mask = None # This will potentially be used to zero out the LiDAR features
     
         if self.enable_modal_mask and self.training:
+            # we only do this when training multimodal from lidar+img checkpoints
+            if current_epoch <= 8 and self.enable_lidar_masking:
+                modal_mask = (torch.rand(imgs.shape[0]) > 0.5).int()
+                modal_mask = modal_mask.to(imgs.device)
             # We do this in two conditions: normal layerdrop training past epoch 8, and corruption fine-tuning always
-            if current_epoch > 8 or self.layerdrop_rate == 0.0 :
+            else:
                 # Modal mask by removing lidar with 30% probability during training, do not do this during inference
                 if torch.rand(1).item() < 0.3:
                     drop_all_lidar_layers = True
                 elif torch.rand(1).item() < 0.2:
                     drop_all_img_layers = True
-            # This is needed when we train the multimodal modal from LiDAR only weights
-            # Even if we drop out the FlatFormer layers, the backbone still functions
-            else:
-                modal_mask = (torch.rand(pts_feats[0].shape[0]) > 0.5).int()
-                modal_mask = modal_mask.to(pts_feats[0].device)
+               
         
         if self.controller is not None:
             flatformer_layers = len(self.pts_middle_encoder.block_list) * 4
-            layer_allocations, predicted_categories = self.controller(voxel_dict, imgs, flatformer_layers)
+            layer_allocations, predicted_categories = self.controller(voxel_features, coors, imgs, flatformer_layers)
             retained_layers_lidar = layer_allocations[:, :flatformer_layers]
             retained_layers_img = layer_allocations[:, flatformer_layers:]
-        
             pts_feats = self.extract_pts_feat(
-                voxel_dict,
+                voxel_features,
+                coors,
                 controller_layers=retained_layers_lidar,
             )
            
@@ -322,12 +325,14 @@ class CmtDetector(MVXTwoStageDetector):
             )
             # Add the cross_entropy corruption prediction loss
             if losses is not None:
-                # print('Predicted Noise', predicted_categories[0])
-                # print("Gt_corruption_labels", gt_corruption_labels[0])
+                if get_dist_info()[0] == 0:
+                    print('Predicted Noise', predicted_categories[0])
+                    print("Gt_corruption_labels", gt_corruption_labels[0])
                 losses['noise_pred_loss'] = nn.functional.cross_entropy(predicted_categories, gt_corruption_labels.cuda())
         else: # If we are not doing controller training
             pts_feats = self.extract_pts_feat(
-                voxel_dict,
+                voxel_features=voxel_features,
+                coors=coors,
                 drop_all_lidar_layers=drop_all_lidar_layers)
             img_feats = self.extract_img_feat(imgs, batch_input_metas, drop_all_img_layers=drop_all_img_layers)
             # We drop out lidar during the first training of multimodal network to ensure it learns from img only
@@ -379,9 +384,11 @@ class CmtDetector(MVXTwoStageDetector):
         batch_input_metas = [item.metainfo for item in batch_data_samples]
         losses = dict()
         img_feats, pts_feats = self.extract_feat(batch_inputs_dict, batch_input_metas, losses)
-        # First 500 epochs of controller training are just to train the corruption perception
-        if self.controller is not None and current_step < 500 and not self.enable_pruning:
-            print(current_step)
+        # First 200 steps of controller training are just to train the corruption perception
+        # Set to 50 bc we are doing multigpu training
+        if self.controller is not None and current_step < 50 and not self.enable_pruning: 
+            if get_dist_info()[0] == 0:
+                print(current_step)
             return losses
         
         # By default, we do not enable pruning

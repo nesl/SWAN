@@ -460,7 +460,8 @@ class SwinBlockSequence(BaseModule):
             if controller_training or retained_layer_list is None or retained_layer_list[0][i]:
                 x_new = block(x, hw_shape)
                 if controller_training:
-                    x = x * (1 - retained_layer_list[:, i]) + x_new * retained_layer_list[:, i]
+                    retained_layers = torch.repeat_interleave(retained_layer_list[:, i], 6)
+                    x = x * (1 - retained_layers[:, None, None]) + x_new * retained_layers[:, None, None]
                 else:
                     x = x_new
 

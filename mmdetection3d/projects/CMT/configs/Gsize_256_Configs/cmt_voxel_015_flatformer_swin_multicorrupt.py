@@ -2,7 +2,7 @@
 
 _base_ = ['/workspace/mmdetection3d/configs/_base_/default_runtime.py']
 custom_imports = dict(
-    imports=['projects.BEVFusion.bevfusion', 'projects.UniM2AE', 'projects.CMT'], allow_failed_imports=False)
+    imports=['projects.UniM2AE', 'projects.CMT'], allow_failed_imports=False)
 
 voxel_size = (0.15, 0.15, 8) 
 grid_size = (720, 720, 1)
@@ -29,13 +29,11 @@ ida_aug_conf = {
 
 metainfo = dict(classes=class_names)
 
-dataset_type = 'NuScenesCorruptDataset'
+dataset_type = 'NuScenesDiverseCorruptDataset'
 data_root = '/workspace/mmdetection3d/data/nuscenes/'
 corruption_root = '/workspace/mmdetection3d/data/multicorrupt'  # Root directory where corrupted data is stored
-camera_corruption = 'dark'  # 'fog', 'snow', 'temporalmisalignment', 'brightness', 'dark', 'missingcamera', 'motionblur', None
-lidar_corruption = 'beamsreducing'  # 'pointsreducing', 'beamsreducing', 'snow', 'fog', 'spatialmisalignment', 'temporalmisalignment', 'motionblur', None
-severity_distribution = {0:0.5, 3:0.5}  # Only sample severity 3
-
+# beamsreducing is lidar only, dark is cam only
+corruptions = ['beamsreducing', 'dark', 'snow', 'fog', 'motionblur']
 
 data_prefix = dict(
     pts='samples/LIDAR_TOP',
@@ -68,7 +66,7 @@ model = dict(
         )
     ),
     pts_voxel_encoder=dict(
-        type='DynamicVFE_New',
+        type='DynamicVFE_Efficient',
         in_channels=5,
         feat_channels=[64, 128],
         with_distance=False,
@@ -329,7 +327,7 @@ test_pipeline = [
 ]
 
 train_dataloader = dict(
-    batch_size=3,
+    batch_size=24,
     num_workers=12,
     persistent_workers=True,
     sampler=dict(type='DefaultSampler', shuffle=True),
@@ -343,29 +341,13 @@ train_dataloader = dict(
         modality=input_modality,
         test_mode=False,
         data_prefix=data_prefix,
-        lidar_corruption=lidar_corruption,
-        camera_corruption=camera_corruption,
+        corruptions=corruptions,
         corruption_root=corruption_root,
         use_valid_flag=True,
-        severity_distribution = severity_distribution,
         return_corruption_info = True,
         # we use box_type_3d='LiDAR' in kitti and nuscenes dataset
         # and box_type_3d='Depth' in sunrgbd and scannet dataset.
         box_type_3d='LiDAR'))
-
-    # dataset=dict(
-    #     type='NuScenesDataset',
-    #     data_root=data_root,
-    #     ann_file='nuscenes_infos_train.pkl',
-    #     pipeline=train_pipeline,
-    #     metainfo=metainfo,
-    #     modality=input_modality,
-    #     test_mode=False,
-    #     data_prefix=data_prefix,
-    #     use_valid_flag=True,
-    #     # we use box_type_3d='LiDAR' in kitti and nuscenes dataset
-    #     # and box_type_3d='Depth' in sunrgbd and scannet dataset.
-    #     box_type_3d='LiDAR'))
 
 
 val_dataloader = dict(
@@ -383,11 +365,9 @@ val_dataloader = dict(
         modality=input_modality,
         test_mode=True,
         data_prefix=data_prefix,
-        lidar_corruption=lidar_corruption,
-        camera_corruption=camera_corruption,
+        corruptions=corruptions,
         corruption_root=corruption_root,
         use_valid_flag=True,
-        severity_distribution = severity_distribution,
         return_corruption_info = True,
         # we use box_type_3d='LiDAR' in kitti and nuscenes dataset
         # and box_type_3d='Depth' in sunrgbd and scannet dataset.
@@ -433,12 +413,12 @@ log_processor = dict(window_size=50)
 
 default_hooks = dict(
     logger=dict(type='LoggerHook', interval=50),
-    checkpoint=dict(type='CheckpointHook', interval=2))
+)
 
-
+find_unused_parameters=True
 randomness = dict(
     seed=100,
-    diff_rank_seed=False,
+    diff_rank_seed=True,
     # deterministic=True
 )
 
