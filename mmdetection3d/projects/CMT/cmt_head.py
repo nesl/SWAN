@@ -5,7 +5,6 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 # ------------------------------------------------------------------------
 
-
 import math
 import copy
 import numpy as np
@@ -210,7 +209,18 @@ class SeparateTaskHead(BaseModule):
 
         return ret_dict
 
+<<<<<<< HEAD
 
+=======
+'''
+CMTHead is used for the multimodal camera + LiDAR, as it expects both img and point features
+CMTImageHead and CMTLidarHead are used for their respective unimodal trainings
+
+However, we can load weights universally among these heads, the only key difference lies in the arguments of the forward function
+and the internal logic. The architecture and weights themselves are identical among these heads
+
+'''
+>>>>>>> modern_unimae
 @MODELS.register_module()
 class CmtHead(BaseModule):
 
@@ -486,7 +496,7 @@ class CmtHead(BaseModule):
         rv_embeds = self._rv_query_embed(ref_points, img_metas)
         return bev_embeds, rv_embeds
 
-    def forward_single(self, x, x_img, img_metas):
+    def forward_single(self, x, x_img, img_metas, pts_mask=None, img_mask=None):
         """
             x: [bs c h w]
             return List(dict(head_name: [num_dec x bs x num_query * head_dim]) ) x task_num
@@ -496,20 +506,24 @@ class CmtHead(BaseModule):
         
         reference_points = self.reference_points.weight
         reference_points, attn_mask, mask_dict = self.prepare_for_dn(x.shape[0], reference_points, img_metas)
-        
-        mask = x.new_zeros(x.shape[0], x.shape[2], x.shape[3])
-        
+
         rv_pos_embeds = self._rv_pe(x_img, img_metas)
+
         bev_pos_embeds = self.bev_embedding(pos2embed(self.coords_bev.to(x.device), num_pos_feats=self.hidden_dim))
-        
+
         bev_query_embeds, rv_query_embeds = self.query_embed(reference_points, img_metas)
         query_embeds = bev_query_embeds + rv_query_embeds
 
+        
         outs_dec, _ = self.transformer(
                             x, x_img, query_embeds,
                             bev_pos_embeds, rv_pos_embeds,
-                            attn_masks=attn_mask
+                            attn_masks=attn_mask,
+                            pts_mask=pts_mask,
+                            img_mask=img_mask
                         )
+
+        
         outs_dec = torch.nan_to_num(outs_dec)
 
         reference = inverse_sigmoid(reference_points.clone())
@@ -557,15 +571,20 @@ class CmtHead(BaseModule):
                 outs['dn_mask_dict'] = task_mask_dict
             
             ret_dicts.append(outs)
-
         return ret_dicts
 
-    def forward(self, pts_feats, img_feats=None, img_metas=None):
+    def forward(self, pts_feats, img_feats=None, img_metas=None, pts_mask=None, img_mask=None):
         """
             list([bs, c, h, w])
         """
+
+        pts_mask = [pts_mask for _ in range(len(pts_feats))]
+        img_mask = [img_mask for _ in range(len(pts_feats))]
         img_metas = [img_metas for _ in range(len(pts_feats))]
-        return multi_apply(self.forward_single, pts_feats, img_feats, img_metas)
+
+        return multi_apply(self.forward_single, pts_feats, img_feats, img_metas, pts_mask, img_mask)
+
+
     
     def _get_targets_single(self, gt_bboxes_3d, gt_labels_3d, pred_bboxes, pred_logits):
         """"Compute regression and classification targets for one image.
@@ -949,7 +968,7 @@ class CmtImageHead(CmtHead):
         super(CmtImageHead, self). __init__(*args, **kwargs)
         self.shared_conv = None
 
-    def forward_single(self, x, x_img, img_metas):
+    def forward_single(self, x, x_img, img_metas, pts_mask=None, img_mask=None):
         """
             x: [bs c h w]
             return List(dict(head_name: [num_dec x bs x num_query * head_dim]) ) x task_num
@@ -1034,7 +1053,7 @@ class CmtLidarHead(CmtHead):
         bev_embeds = self._bev_query_embed(ref_points, img_metas)
         return bev_embeds, None
     
-    def forward_single(self, x, x_img, img_metas):
+    def forward_single(self, x, x_img, img_metas, pts_mask=None, img_mask=None):
         """
             x: [bs c h w]
             return List(dict(head_name: [num_dec x bs x num_query * head_dim]) ) x task_num

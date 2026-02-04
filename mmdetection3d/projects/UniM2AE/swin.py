@@ -685,9 +685,313 @@ class PatchEmbed(BaseModule):
         self.embed_dims = embed_dims
 
         self.projection = nn.Conv2d(in_channels, embed_dims, kernel_size=kernel_size, stride=stride)
-
         if norm_cfg is not None:
-            self.norm = build_norm_layer(norm_cfg, embed_dims)[1]
+                    self.norm = build_norm_layer(norm_cfg, embed_dims)[1]
+        # stores the result of Knapsack
+        res = res_ret = K[n][W]
+
+        # stores the selected indexes
+        w = W
+        idx = []
+        for i in range(n, 0, -1):
+            if res <= 0:
+                break
+            # Either the result comes from the top (K[i-1][w]) 
+            # or from (val[i-1] + K[i-1] [w-wt[i-1]]) as in Knapsack table.
+            # If it comes from the latter one, it means the item is included.
+            if res == K[i - 1][w]:
+                continue
+            else:
+                # This item is included.
+                idx.append(i - 1)
+                # Since this weight is included, its value is deducted
+                res = res - val[i - 1]
+                w = w - wt[i - 1]
+        
+        return res_ret, idx[::-1]   # make the idx in an increasing order
+
+
+def group_windows(group_size, num_ele_win):
+    '''Greedily apply the DP algorithm to group the elements.
+    Args:
+        group_size (int): maximal size of the group
+        num_ele_win (list[int]): number of visible elements of each window
+    Outputs:
+        num_ele_group (list[int]): number of elements of each group
+        grouped_idx (list[list[int]]): the seleted indeices of each group
+    '''
+    wt = num_ele_win.copy()
+    ori_idx = list(range(len(wt)))
+    grouped_idx = []
+    num_ele_group = []
+
+    while len(wt) > 0:
+        res, idx = knapsack(group_size, wt)
+        num_ele_group.append(res)
+
+        # append the selected idx
+        selected_ori_idx = [ori_idx[i] for i in idx]
+        grouped_idx.append(selected_ori_idx)
+
+        # remaining idx
+        wt = [wt[i] for i in range(len(ori_idx)) if i not in idx]
+        ori_idx = [ori_idx[i] for i in range(len(ori_idx)) if i not in idx]
+    
+    return num_ele_group, grouped_idx
+
+
+class GroupingModule:
+    def __init__(self, window_size, shift_size, group_size=None):
+        self.window_size = window_size
+        self.shift_size = shift_size
+        assert shift_size >= 0 and shift_size < window_size
+
+        self.group_size = group_size or self.window_size**2
+        self.attn_mask = None
+        self.rel_pos_idx = None
+    
+    def _get_group_id(self, coords):
+        group_id = coords.clone()
+        group_id += (self.window_size - self.shift_size) % self.window_size
+        group_id = group_id // self.window_size
+        group_id = group_id[0, :, 0] * group_id.shape[1] + group_id[0, :, 1]    # (N_vis, )
+        return group_id
+    
+    def _get_attn_mask(self, group_id):
+        pos_mask = (group_id == -1)
+        pos_mask = torch.logical_and(pos_mask[:, :, None], pos_mask[:, None, :])
+        gid = group_id.float()
+        attn_mask_float = gid.unsqueeze(2) - gid.unsqueeze(1)
+        attn_mask = torch.logical_or(attn_mask_float != 0, pos_mask)
+        attn_mask_float.masked_fill_(attn_mask, -100.)
+        return attn_mask_float
+    
+    def _get_rel_pos_idx(self, coords):
+        # num_groups, group_size, group_size, 2
+        rel_pos_idx = coords[:, :, None, :] - coords[:, None, :, :]
+        rel_pos_idx += self.window_size - 1
+        rel_pos_idx[..., 0] *= 2 * self.window_size - 1
+        rel_pos_idx = rel_pos_idx.sum(dim=-1)
+        return rel_pos_idx
+    
+    def _prepare_masking(self, coords):
+        # coords: (B, N_vis, 2)
+        group_id = self._get_group_id(coords)   # (N_vis, )
+        attn_mask = self._get_attn_mask(group_id.unsqueeze(0))
+        rel_pos_idx = self._get_rel_pos_idx(coords[:1])
+
+        # do not shuffle
+        self.idx_shuffle = None
+        self.idx_unshuffle = None
+
+        return attn_mask, rel_pos_idx
+    
+    def _prepare_grouping(self, coords):
+        # find out and merge the elements within each local window
+        # coords: (B, N_vis, 2)
+        group_id = self._get_group_id(coords)   # (N_vis, )
+        idx_merge = torch.argsort(group_id)
+        group_id = group_id[idx_merge].contiguous()
+        exact_win_sz = torch.unique_consecutive(group_id, return_counts=True)[1].tolist()
+
+        # group the windows by DP algorithm
+        self.group_size = min(self.window_size**2, max(exact_win_sz))
+        num_ele_group, grouped_idx = group_windows(self.group_size, exact_win_sz)
+
+        # pad the splits if their sizes are smaller than the group size
+        idx_merge_spl = idx_merge.split(exact_win_sz)
+        group_id_spl = group_id.split(exact_win_sz)
+        shuffled_idx, attn_mask = [], []
+        for num_ele, gidx in zip(num_ele_group, grouped_idx):
+            pad_r = self.group_size - num_ele
+            # shuffle indexes: (group_size)
+            sidx = torch.cat([idx_merge_spl[i] for i in gidx], dim=0)
+            shuffled_idx.append(F.pad(sidx, (0, pad_r), value=-1))
+            # attention mask: (group_size)
+            amask = torch.cat([group_id_spl[i] for i in gidx], dim=0)
+            attn_mask.append(F.pad(amask, (0, pad_r), value=-1))
+        
+        # shuffle indexes: (num_groups * group_size, )
+        self.idx_shuffle = torch.cat(shuffled_idx, dim=0)
+        # unshuffle indexes that exclude the padded indexes: (N_vis, )
+        self.idx_unshuffle = torch.argsort(self.idx_shuffle)[-sum(num_ele_group):]
+        self.idx_shuffle[self.idx_shuffle==-1] = 0  # index_select does not permit negative index
+
+        # attention mask: (num_groups, group_size, group_size)
+        attn_mask = torch.stack(attn_mask, dim=0)
+        attn_mask = self._get_attn_mask(attn_mask)
+
+        # relative position indexes: (num_groups, group_size, group_size)
+        coords_shuffled = coords[0][self.idx_shuffle].reshape(-1, self.group_size, 2)
+        rel_pos_idx = self._get_rel_pos_idx(coords_shuffled) # num_groups, group_size, group_size
+        rel_pos_mask = torch.ones_like(rel_pos_idx).masked_fill_(attn_mask.bool(), 0)
+        rel_pos_idx = rel_pos_idx * rel_pos_mask
+
+        return attn_mask, rel_pos_idx
+    
+    def prepare(self, coords, mode):
+        self._mode = mode
+        if mode == 'masking':
+            return self._prepare_masking(coords)
+        elif mode == 'grouping':
+            return self._prepare_grouping(coords)
+        else:
+            raise KeyError("")
+
+    def group(self, x):
+        if self._mode == 'grouping':
+            self.ori_shape = x.shape
+            x = torch.index_select(x, 1, self.idx_shuffle)   # (B, nG*GS, C)
+            x = x.reshape(-1, self.group_size, x.shape[-1]) # (B*nG, GS, C)
+        return x
+    
+    def merge(self, x):
+        if self._mode == 'grouping':
+            B, N, C = self.ori_shape
+            x = x.reshape(B, -1, C) # (B, nG*GS, C)
+            x = torch.index_select(x, 1, self.idx_unshuffle)    # (B, N, C)
+        return x
+
+
+class BasicLayer(nn.Module):
+    """ A basic Swin Transformer layer for one stage.
+
+    Args:
+        dim (int): Number of input channels.
+        input_resolution (tuple[int]): Input resolution.
+        depth (int): Number of blocks.
+        num_heads (int): Number of attention heads.
+        window_size (int): Local window size.
+        mlp_ratio (float): Ratio of mlp hidden dim to embedding dim.
+        qkv_bias (bool, optional): If True, add a learnable bias to query, key, value. Default: True
+        qk_scale (float | None, optional): Override default qk scale of head_dim ** -0.5 if set.
+        drop (float, optional): Dropout rate. Default: 0.0
+        attn_drop (float, optional): Attention dropout rate. Default: 0.0
+        drop_path (float | tuple[float], optional): Stochastic depth rate. Default: 0.0
+        norm_layer (nn.Module, optional): Normalization layer. Default: nn.LayerNorm
+        downsample (nn.Module | None, optional): Downsample layer at the end of the layer. Default: None
+        use_checkpoint (bool): Whether to use checkpointing to save memory. Default: False.
+    """
+
+    def __init__(self, dim, input_resolution, depth, num_heads, window_size,
+                 mlp_ratio=4., qkv_bias=True, qk_scale=None, drop=0., attn_drop=0.,
+                 drop_path=0., norm_layer=nn.LayerNorm, downsample=None, use_checkpoint=False,
+                 mask_ratio=0.75):
+
+        super().__init__()
+        self.dim = dim
+        self.input_resolution = input_resolution
+        self.depth = depth
+        self.use_checkpoint = use_checkpoint
+        self.window_size = window_size
+        if min(self.input_resolution) <= self.window_size:
+            # if window size is larger than input resolution, we don't partition windows
+            self.shift_size = 0
+            self.window_size = min(self.input_resolution)
+        else:
+            self.shift_size = window_size // 2
+
+        # build blocks
+        self.blocks = nn.ModuleList([
+            SwinTransformerBlock(dim=dim, input_resolution=input_resolution,
+                                 num_heads=num_heads, window_size=window_size,
+                                 shift_size=0 if (i % 2 == 0) else window_size // 2,
+                                 mlp_ratio=mlp_ratio,
+                                 qkv_bias=qkv_bias, qk_scale=qk_scale,
+                                 drop=drop, attn_drop=attn_drop,
+                                 drop_path=drop_path[i] if isinstance(drop_path, list) else drop_path,
+                                 norm_layer=norm_layer)
+            for i in range(depth)])
+
+        # patch merging layer
+        if downsample is not None:
+            self.downsample = downsample(input_resolution, dim=dim, norm_layer=norm_layer, mask_ratio=mask_ratio)
+        else:
+            self.downsample = None
+    
+    # Keep layer mask is [0, 1, 0] where 0 is skip and 1 is run this particular layer
+    # Each BasicLayer has the same number of tokens, and potentially ends in a downsample
+    # In my understanding, Swin will have 4 of these basicblocks, with [2, 2, 6, 2] layer config
+    def forward(self, x, coords, patch_mask, return_x_before_down=False, keep_layer_mask=None):
+        # prepare the attention mask
+        # when the number of visible patches is small, 
+        # all patches are partitioned into a single group
+        mode = "masking" if x.shape[1] <= 2 * self.window_size**2 else "grouping"
+        
+        group_block = GroupingModule(self.window_size, 0)
+        mask, pos_idx = group_block.prepare(coords, mode)
+        if self.window_size < min(self.input_resolution):
+            group_block_shift = GroupingModule(self.window_size, self.shift_size)
+            mask_shift, pos_idx_shift = group_block_shift.prepare(coords, mode)
+        else:
+            # do not shift
+            group_block_shift = group_block
+            mask_shift, pos_idx_shift = mask, pos_idx
+
+        # forward with grouping/masking
+        for i, blk in enumerate(self.blocks):
+            # Do not run the block if this is 0
+            if keep_layer_mask and not keep_layer_mask[i]:
+                continue
+            gblk = group_block if i % 2 ==0 else group_block_shift
+            attn_mask = mask if i % 2 ==0 else mask_shift
+            rel_pos_idx = pos_idx if i % 2 ==0 else pos_idx_shift
+            x = gblk.group(x)
+            x = blk(x, attn_mask, rel_pos_idx)
+            x = gblk.merge(x)
+        
+        # patch merging
+        if self.downsample is not None:
+            x_down, coords, patch_mask = self.downsample(x, patch_mask)
+        else:
+            x_down = x
+        
+        if return_x_before_down:
+            return x, x_down, coords, patch_mask
+        else:
+            return x_down, coords, patch_mask
+
+
+    def extra_repr(self) -> str:
+        return f"dim={self.dim}, input_resolution={self.input_resolution}, window_size={self.window_size},"\
+                f"shift_size={self.shift_size}, depth={self.depth}"
+
+    def flops(self):
+        flops = 0
+        for blk in self.blocks:
+            flops += blk.flops()
+        if self.downsample is not None:
+            flops += self.downsample.flops()
+        return flops
+
+
+class PatchEmbed(nn.Module):
+    r""" Image to Patch Embedding
+
+    Args:
+        img_size (int): Image size.  Default: 224.
+        patch_size (int): Patch token size. Default: 4.
+        in_chans (int): Number of input image channels. Default: 3.
+        embed_dim (int): Number of linear projection output channels. Default: 96.
+        norm_layer (nn.Module, optional): Normalization layer. Default: None
+    """
+
+    def __init__(self, img_size=224, patch_size=4, in_chans=3, embed_dim=96, norm_layer=None):
+        super().__init__()
+        img_size = to_2tuple(img_size)
+        patch_size = to_2tuple(patch_size)
+        patches_resolution = [img_size[0] // patch_size[0], img_size[1] // patch_size[1]]
+        self.img_size = img_size
+        self.patch_size = patch_size
+        self.patches_resolution = patches_resolution
+        self.num_patches = patches_resolution[0] * patches_resolution[1]
+
+        self.in_chans = in_chans
+        self.embed_dim = embed_dim
+
+        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
+        if norm_layer is not None:
+            self.norm = norm_layer(embed_dim)
         else:
             self.norm = None
 
@@ -838,7 +1142,9 @@ class SwinTransformer(BaseModule):
                  pretrained=None,
                  convert_weights=False,
                  frozen_stages=-1,
-                 init_cfg=None):
+                 init_cfg=None
+                 num_classes=3
+                 ):
 
         self.convert_weights = convert_weights
         self.frozen_stages = frozen_stages
@@ -868,8 +1174,17 @@ class SwinTransformer(BaseModule):
         self.embed_dims = embed_dims
         self.window_size = window_size
 
-        assert strides[0] == patch_size
 
+        self.num_classes = num_classes
+        self.num_layers = len(depths)
+        self.embed_dim = embed_dims
+        self.ape = use_abs_pos_embed
+        self.patch_norm = patch_norm
+        self.num_features = int(self.embed_dim * 2 ** (self.num_layers - 1))
+        self.mlp_ratio = mlp_ratio
+        self.drop_path_rate = drop_path_rate
+        self.depths = depths
+        # split image into non-overlapping patches
         self.patch_embed = PatchEmbed(
             in_channels=in_channels,
             embed_dims=embed_dims,
@@ -1030,12 +1345,13 @@ class SwinTransformer(BaseModule):
 
         return outs
 
-    def forward_masked(self, x, mask):
+    def forward_masked(self, x, mask, keep_layer_mask=None):
         """Forward with MAE-style masking - returns multi-scale features.
 
         Args:
             x: Input images [B, C, H, W]
             mask: Boolean mask [B, L] where 1/True = masked, 0/False = visible
+            keep_layer_mask: Optional layer-wise mask for stochastic depth
 
         Returns:
             outs: List of 4 feature tensors from each stage (visible tokens only)
@@ -1066,23 +1382,29 @@ class SwinTransformer(BaseModule):
         coords = torch.stack(torch.meshgrid([coords_h, coords_w]), dim=-1).reshape(1, H*W, 2)
 
         # Select visible patches (mask=1 means masked, so use ~mask to select visible)
-        #print(f"x shape before masking: {x.shape}")
         x_vis = x[(~mask).expand(B, -1)].reshape(B, -1, C)
-        #print(f"x_vis shape after masking: {x_vis.shape}")
         coords = coords[~mask].reshape(1, -1, 2)
+        vis_mask = ~mask  # For compatibility with modern_unimae naming
+
+        # Split keep_layer_mask by depth if provided
+        if keep_layer_mask is not None:
+            keep_layer_mask = torch.split(keep_layer_mask, self.depths)
 
         # Forward through stages
-        # Note: mask convention is 1 = masked throughout
         outs = []
         input_resolution = (H, W)
         for i, stage in enumerate(self.stages):
-            x_before, x_vis, coords, mask = stage.forward_masked(
-                x_vis, coords, mask, input_resolution)
+            # Get layer-specific mask if available
+            layer_mask = keep_layer_mask[i] if keep_layer_mask is not None else None
+            
+            x_before, x_vis, coords, vis_mask = stage.forward_masked(
+                x_vis, coords, vis_mask, input_resolution, keep_layer_mask=layer_mask)
 
-            # Normalize and store output
-            norm_layer = getattr(self, f'norm{i}')
-            out = norm_layer(x_before)
-            outs.append(out)
+            if i in self.out_indices:
+                # Normalize and store output
+                norm_layer = getattr(self, f'norm{i}')
+                out = norm_layer(x_before)
+                outs.append(out)
 
             # Update resolution for next stage
             if stage.downsample is not None:

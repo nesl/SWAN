@@ -164,12 +164,20 @@ class BEVFusion(Base3DDetector):
         return x
 
     def extract_pts_feat(self, batch_inputs_dict) -> torch.Tensor:
+        
         points = batch_inputs_dict['points']
         with torch.autocast('cuda', enabled=False):
             points = [point.float() for point in points]
             feats, coords, sizes = self.voxelize(points)
             batch_size = coords[-1, 0] + 1
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+
+        start.record()
         x = self.pts_middle_encoder(feats, coords, batch_size)
+        end.record()
+        torch.cuda.synchronize()
+        print(start.elapsed_time(end))
         return x
 
     @torch.no_grad()
@@ -227,12 +235,13 @@ class BEVFusion(Base3DDetector):
             - bbox_3d (:obj:`BaseInstance3DBoxes`): Prediction of bboxes,
                 contains a tensor with shape (num_instances, 7).
         """
+        
         batch_input_metas = [item.metainfo for item in batch_data_samples]
         feats = self.extract_feat(batch_inputs_dict, batch_input_metas)
 
         if self.with_bbox_head:
             outputs = self.bbox_head.predict(feats, batch_input_metas)
-
+        
         res = self.add_pred_to_datasample(batch_data_samples, outputs)
 
         return res

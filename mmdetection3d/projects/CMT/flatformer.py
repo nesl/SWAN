@@ -21,6 +21,65 @@ def _create_cu_seqlens(batch_size: int, num_tokens: int, device: torch.device) -
         device=device,
     )
 
+class OrdinaryMultiHeadAttn(nn.MultiheadAttention):
+    def forward(
+        self, 
+        q: torch.Tensor, 
+        k: torch.Tensor, 
+        v: torch.Tensor
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        # 1. Setup dimensions
+        batch_size, num_tokens, embed_dim = q.shape
+        num_heads = self.num_heads
+        head_dim = embed_dim // num_heads
+        origin_dtype = q.dtype
+        # 2. Linear Projections (Replicating the baddbmm logic)
+        # FlashAttention uses internal weights (in_proj_weight/bias)
+        # We apply them to q, k, v to get the combined QKV tensor
+        x = torch.stack([q, k, v]) # [3, batch_size, num_tokens, embed_dim]
+        x = x.view(3, -1, embed_dim) # Flatten for baddbmm
+        
+        # Replicate: x = torch.baddbmm(self.ib(), x, self.iw())
+        # Note: Using the weights from the provided flash_attn_module
+        x = torch.baddbmm(
+            self.in_proj_bias.view(3, 1, -1).to(origin_dtype), 
+            x, 
+            self.in_proj_weight.view(3, embed_dim, embed_dim).transpose(1, 2).to(origin_dtype)
+        )
+
+        # 3. Reshape and Split Heads
+        # Reshape back to [3, batch, tokens, heads, head_dim]
+        qkv = x.view(3, batch_size, num_tokens, num_heads, head_dim)
+        
+        # Split into individual Q, K, V and transpose to [batch, heads, tokens, head_dim]
+        # This is the standard format for PyTorch attention
+        q_out = qkv[0].transpose(1, 2)
+        k_out = qkv[1].transpose(1, 2)
+        v_out = qkv[2].transpose(1, 2)
+
+        scaling = head_dim ** -0.5
+        attn_scores = torch.matmul(q_out, k_out.transpose(-2, -1)) * scaling
+        
+        # 3. Apply Softmax
+        # This is the point where standard attention usually slows down 
+        # because it has to read/write the huge N x N matrix to memory
+        attn_weights = F.softmax(attn_scores, dim=-1)
+        
+        # 4. Multiply by Values
+        # [batch, heads, tokens, tokens] @ [batch, heads, tokens, head_dim]
+        attn_output = torch.matmul(attn_weights, v_out)
+
+        # 5. Reshape and Final Projection
+        attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, num_tokens, embed_dim)
+        
+        # Final output projection
+        output = F.linear(
+            attn_output, 
+            self.out_proj.weight, 
+            self.out_proj.bias
+        )
+
+        return output, None
 
 class FlashAttention(nn.MultiheadAttention):
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
@@ -32,10 +91,10 @@ class FlashAttention(nn.MultiheadAttention):
         origin_dtype = q.dtype
         # Determine target dtype for FlashAttention (must be float16 or bfloat16)
         target_dtype = torch.float16 if origin_dtype == torch.float32 else origin_dtype
-
         x = torch.stack([q, k, v])
         x = x.to(target_dtype)
         x = x.view(3, -1, x.shape[-1])
+
         x = torch.baddbmm(
             self.ib().to(target_dtype), 
             x, 
@@ -72,29 +131,21 @@ class GroupAttention(nn.Module):
         super().__init__()
         self.group_size = group_size
         self.attn = FlashAttention(in_channels, num_heads)
+        # self.attn = OrdinaryMultiHeadAttn(in_channels, num_heads)
 
     def forward(self, x, pe):
         size = x.shape[0]
         num_groups = int(math.ceil(size / self.group_size))
-        padded_size = num_groups * self.group_size
-
-        # Pad if necessary to make tensor divisible by group_size
-        if size < padded_size:
-            pad_size = padded_size - size
-            x = F.pad(x, (0, 0, 0, pad_size))  # pad last dim (features) is 0, pad second-to-last (tokens)
-            pe = F.pad(pe, (0, 0, 0, pad_size))
 
         x = x.view(num_groups, self.group_size, -1)
         pe = pe.view(num_groups, self.group_size, -1)
 
         q = k = x + pe
         v = x
+
         x, _ = self.attn(q, k, v)
 
-        x = x.view(padded_size, -1)
-
-        # Remove padding
-        x = x[:size]
+        x = x.view(num_groups * self.group_size, -1)
 
         return x
 
@@ -142,16 +193,25 @@ class BasicBlock(nn.Module):
             )
             self.block.append(layer)
     # TODO: We may have to update this structure slightly when moving towards TensorRT and edge devices 
-    def forward(self, x: torch.Tensor, pe: torch.Tensor, mappings: Dict[str, Any], retained_layer_list=None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, pe: torch.Tensor, mappings: Dict[str, Any], retained_layer_list=None, controller_training=False) -> torch.Tensor:
         # Run through the four basic layers while performing shift and sort operations
         for k, name in enumerate(["x", "x_shift", "y", "y_shift"]):
-            # If retained_layer_list is exists and is 0, do not run that particular layer
-            if retained_layer_list is not None and not retained_layer_list[k]:
-                continue
-            indices = mappings[name]
-            x[indices] = self.block[k](x[indices][mappings["flat2win"]], pe[indices][mappings["flat2win"]])[
-                mappings["win2flat"]
-            ]
+            # If retained_layer_list does not exist OR is 1 OR controller training is active, run that particular layer
+            # During normal layerdrop training and all inference retained_layer_list has tensor shape [1, 8]
+            if controller_training or retained_layer_list is None or retained_layer_list[0][k]:
+                indices = mappings[name]
+                x_new = self.block[k](x[indices][mappings["flat2win"]], pe[indices][mappings["flat2win"]])[
+                    mappings["win2flat"]
+                ]
+
+                # If we are doing controller training, then retained_layer_list is going to be B x 12 as it is lidar
+                if controller_training:
+                    across_batch_mask = retained_layer_list[:, k]
+                    repeats = mappings['batch_start_indices'][1:] - mappings['batch_start_indices'][:-1]
+                    expanded_mask = torch.unsqueeze(torch.repeat_interleave(across_batch_mask, repeats), dim=-1) # Match dims with x[indices]
+                    x[indices] = x[indices] * (1 - expanded_mask) + x_new * expanded_mask
+                else:
+                    x[indices] = x_new
 
         return x
 
@@ -215,38 +275,43 @@ class FlattenedWindowMapping(nn.Module):
             * self.group_size
         )
         batch_start_indices_p = F.pad(torch.cumsum(num_per_batch_p, dim=0), (1, 0))
-        flat2win = torch.arange(batch_start_indices_p[-1]).to(coords.device)
-        win2flat = torch.arange(batch_start_indices[-1]).to(coords.device)
+        needed1 = int(batch_start_indices_p[-1])
+        needed2 = int(batch_start_indices[-1])
+        max_needed = max(needed1, needed2)
+
+        if not hasattr(self, "_arange_cache") or self._arange_cache.numel() < max_needed:
+            self._arange_cache = torch.arange(max_needed, device=coords.device)
+
+        flat2win = self._arange_cache[:needed1].clone()
+        win2flat = self._arange_cache[:needed2].clone()
+
+        # flat2win = torch.arange(batch_start_indices_p[-1]).to(coords.device)
+        # win2flat = torch.arange(batch_start_indices[-1]).to(coords.device)
+
+
+        
         for i in range(batch_size):
             win2flat[batch_start_indices[i] : batch_start_indices[i + 1]] += (
                 batch_start_indices_p[i] - batch_start_indices[i]
             )
             if num_per_batch[i] != num_per_batch_p[i]:
-                if num_per_batch[i] >= self.group_size:
-                    # Normal case: copy from previous group to pad incomplete last group
-                    flat2win[
-                        batch_start_indices_p[i + 1]
-                        - self.group_size
-                        + (num_per_batch[i] % self.group_size) : batch_start_indices_p[i + 1]
-                    ] = flat2win[
-                        batch_start_indices_p[i + 1]
-                        - 2 * self.group_size
-                        + (num_per_batch[i] % self.group_size) : batch_start_indices_p[i + 1]
-                        - self.group_size
-                    ]
-                else:
-                    # Small batch case: repeat existing indices to fill the padded region
-                    actual_count = num_per_batch[i].item()
-                    pad_start = batch_start_indices_p[i].item() + actual_count
-                    pad_end = batch_start_indices_p[i + 1].item()
-                    if actual_count > 0 and pad_end > pad_start:
-                        # Repeat the last valid index to fill padding
-                        flat2win[pad_start:pad_end] = flat2win[pad_start - 1]
+                flat2win[
+                    batch_start_indices_p[i + 1]
+                    - self.group_size
+                    + (num_per_batch[i] % self.group_size) : batch_start_indices_p[i + 1]
+                ] = flat2win[
+                    batch_start_indices_p[i + 1]
+                    - 2 * self.group_size
+                    + (num_per_batch[i] % self.group_size) : batch_start_indices_p[i + 1]
+                    - self.group_size
+                ]
             flat2win[batch_start_indices_p[i] : batch_start_indices_p[i + 1]] -= (
                 batch_start_indices_p[i] - batch_start_indices[i]
             )
+        
 
-        mappings = {"flat2win": flat2win, "win2flat": win2flat}
+        mappings = {"flat2win": flat2win, "win2flat": win2flat, 'batch_start_indices':batch_start_indices}
+
         for shifted in [False, True]:
             (
                 n2,
@@ -333,12 +398,9 @@ class FlatFormer(nn.Module):
         pos_temperature=10000,
         normalize_pos=False,
         group_size=69,
-        return_sparse=False,  # NEW: Added return_sparse option
-        **kwargs
     ) -> None:
         super().__init__()
         self.group_size = group_size
-        self.return_sparse = return_sparse  # NEW: Store return_sparse flag
 
         self.embedding = PositionalEmbedding(in_channels, sparse_shape, normalize_pos, pos_temperature)
         self.mapping = FlattenedWindowMapping(
@@ -355,56 +417,21 @@ class FlatFormer(nn.Module):
 
         self.output_shape = output_shape
 
-    # NEW: Updated forward to support both dict and tensor inputs, and return_sparse option
-    def forward(self, x, coords=None, batch_size=None, retained_layer_list=None):
-        # 1. Interface Adapter for SST/Pretrain (Dict Input)
-        is_dict_input = False
-        if isinstance(x, dict):
-            is_dict_input = True
-            voxel_info = x
-            feats = voxel_info['voxel_feats']
-            coords = voxel_info['voxel_coors']
-            if batch_size is None:
-                batch_size = int(coords[:, 0].max().item()) + 1
-        else:
-            feats = x
+    # Added LayerDropping Logic
+    def forward(self, x, coords, batch_size, retained_layer_list=None, controller_training=False):
 
-        # 2. Main Logic - Transformer blocks
-        pe = self.embedding(coords, feats.dtype)
+        pe = self.embedding(coords, x.dtype)
         mappings = self.mapping(coords, batch_size)
-
-        # Pad feats and pe to match the padded size expected by mappings
-        original_size = feats.shape[0]
-        padded_size = mappings["flat2win"].shape[0]
-        if padded_size > original_size:
-            pad_size = padded_size - original_size
-            feats = F.pad(feats, (0, 0, 0, pad_size))
-            pe = F.pad(pe, (0, 0, 0, pad_size))
-
         for i, block in enumerate(self.block_list):
             # Chunk the list four at a time for each block
+            stage_layer_list = None
             if retained_layer_list is not None:
-                stage_layer_list = retained_layer_list[i*4:(i+1) * 4]
-                feats = block(feats, pe, mappings, stage_layer_list)
-            else:
-                feats = block(feats, pe, mappings)
+                stage_layer_list = retained_layer_list[:, i*4:(i+1) * 4]
 
-        # Remove padding after transformer blocks
-        feats = feats[:original_size]
+            x = block(x, pe, mappings, stage_layer_list, controller_training)
+        x = self.recover_bev(x, coords, batch_size)
 
-        # 3. Output Logic
-        if self.return_sparse:
-            # For Pretraining: Return sparse tokens or update the dict
-            if is_dict_input:
-                voxel_info['output'] = feats
-                # Update voxel_feats too for downstream decoders
-                voxel_info['voxel_feats'] = feats 
-                return voxel_info
-            return feats, coords
-
-        # For Standard Detection: Scatter to dense BEV
-        x_dense = self.recover_bev(feats, coords, batch_size)
-        return x_dense
+        return x
 
     def _reset_parameters(self):
         for _, p in self.named_parameters():
@@ -412,10 +439,6 @@ class FlatFormer(nn.Module):
                 nn.init.xavier_uniform_(p)
 
     def recover_bev(self, voxel_feat, coors, batch_size):
-        """
-        Recover BEV representation from voxel features.
-        Uses clamping instead of filtering to ensure stable gradients.
-        """
         ny, nx = self.output_shape
         feat_dim = voxel_feat.shape[-1]
 
@@ -427,37 +450,17 @@ class FlatFormer(nn.Module):
             # Only include non-empty pillars
             batch_mask = coors[:, 0] == batch_itt
             this_coors = coors[batch_mask, :]
-
-            # Handle empty batches
-            if this_coors.shape[0] == 0:
-                batch_canvas.append(canvas)
-                continue
-
-            # Clamp coordinates to valid range (safer than filtering for gradients)
-            y_coords = torch.clamp(this_coors[:, 2].long(), 0, ny - 1)
-            x_coords = torch.clamp(this_coors[:, 3].long(), 0, nx - 1)
-
-            # Calculate indices (always valid due to clamping)
-            indices = y_coords * nx + x_coords
-
-            # Get corresponding voxel features
+            indices = this_coors[:, 2] * nx + this_coors[:, 3]
+            indices = indices.type(torch.long)
             voxels = voxel_feat[batch_mask, :]  # [n, c]
             voxels = voxels.t()  # [c, n]
-
-            # Use scatter_reduce for proper gradient flow and duplicate handling
-            canvas.scatter_reduce_(1,
-                                  indices.unsqueeze(0).expand(feat_dim, -1),
-                                  voxels,
-                                  reduce='mean',
-                                  include_self=False)
-
+            canvas[:, indices] = voxels
             batch_canvas.append(canvas)
 
         batch_canvas = torch.stack(batch_canvas, 0)
+
         batch_canvas = batch_canvas.view(batch_size, feat_dim, ny, nx)
 
         return batch_canvas
 
 
-if __name__=='__main__':
-    import pdb; pdb.set_trace()

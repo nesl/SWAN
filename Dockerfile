@@ -19,4 +19,6 @@ WORKDIR /workspace
 WORKDIR /workspace/mmdetection3d
 RUN pip install timm
 RUN pip install torch-scatter -f https://data.pyg.org/whl/torch-2.1.0+cu121.html
+RUN pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.2.post1/flash_attn-2.7.2.post1+cu12torch2.1cxx11abiFALSE-cp310-cp310-linux_x86_64.whl
+RUN pip install einops
 ENV PYTHONPATH="/workspace/mmdetection3d:${PYTHONPATH}"

@@ -1,3 +1,14 @@
+'''
+Docstring for projects.CMT.cmt_utils.util_funcs
+
+Random miscellaneous functions that are utilized
+
+Also include custom training hooks
+TODO Should migrate them over to hooks.py
+'''
+
+
+
 import torch
 
 from mmdet.models.task_modules import AssignResult, BaseAssigner, BaseBBoxCoder
@@ -650,3 +661,119 @@ class UnifiedDataBaseSampler(object):
             else:
                 valid_samples.append(sampled[i - num_gt])
         return valid_samples
+
+from mmengine.hooks import Hook
+from mmengine.logging import print_log
+from mmengine.dist import is_main_process
+from mmdet3d.registry import HOOKS
+
+@HOOKS.register_module()
+class FreezeSpecificModuleHook(Hook):
+    def __init__(self, freeze_names):
+        self.freeze_module_names = [freeze_names] if isinstance(freeze_names, str) else freeze_names
+
+    def before_run(self, runner):
+        # Use get_model to handle DDP wrappers automatically
+        from mmengine.model import is_model_wrapper
+        model = runner.model
+        if is_model_wrapper(model):
+            model = model.module
+            
+        # 1. Freeze Specified Modules 
+        for target_name in self.freeze_module_names:
+            for name, module in model.named_modules():
+                if target_name in name:
+                    print_log(f"Found {target_name}")
+                    for param in module.parameters():
+                        param.requires_grad = False
+
+        # 3. Verification Summary
+        if is_main_process():
+            trainable = [n for n, p in model.named_parameters() if p.requires_grad]
+            print_log(f"--> Total trainable parameter groups: {len(trainable)}", logger='current')
+
+@HOOKS.register_module()
+class FreezeLayersHook(Hook):
+    def __init__(self, train_module_names):
+        self.train_module_names = [train_module_names] if isinstance(train_module_names, str) else train_module_names
+
+    def before_run(self, runner):
+        # Use get_model to handle DDP wrappers automatically
+        from mmengine.model import is_model_wrapper
+        model = runner.model
+        if is_model_wrapper(model):
+            model = model.module
+            
+        # 1. Freeze EVERYTHING 
+        for param in model.parameters():
+            param.requires_grad = False
+        
+        # 2. Unfreeze specific modules
+        # We loop through the list of names you provided
+        for target_name in self.train_module_names:
+            found = False
+            
+            # We look for the module by name within the model
+            for name, module in model.named_modules():
+                if name == target_name:
+                    found = True
+                    # Turn gradients back on
+                    for param in module.parameters():
+                        param.requires_grad = True
+                    
+                    # Force train mode (for BatchNorm/Dropout behavior)
+                    module.train()
+                    print(f"✅ Unfrozen module: {name}")
+                    
+            if not found:
+                print(f"⚠️ WARNING: Module '{target_name}' not found in model!")
+
+        # 3. Double check verification
+        trainable_count = 0
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                trainable_count += 1
+                # print(f"Trainable: {name}") # Uncomment to see every single weight
+        
+        print(f"--> Total trainable parameter groups: {trainable_count}")
+
+
+from mmengine.model import is_model_wrapper
+@HOOKS.register_module()
+class CutoffRatioIncrementHook(Hook):
+    """
+    A custom hook to increment the `cutoff_ratio` attribute of the model 
+    at the end of every epoch.
+    
+    Args:
+        increment (float): The amount to increase the ratio by. Default: 0.01.
+        max_value (float, optional): A maximum cap for the ratio. Default: 1.0.
+    """
+    def __init__(self, increment=0.01, max_value=0.2):
+        self.increment = increment
+        self.max_value = max_value
+
+    def before_train_epoch(self, runner):
+        # 1. Access the model
+        model = runner.model
+
+        # 2. Unwrap the model if it is wrapped (e.g., DistributedDataParallel)
+        # This is critical in MMDetection3D/MMEngine
+        if is_model_wrapper(model):
+            model = model.module
+
+        # 3. Check if attribute exists to avoid crashes
+        if hasattr(model, 'cutoff_ratio'):
+            # Increment
+            new_value = model.cutoff_ratio + self.increment
+            
+            # Apply cap if max_value is set
+            if self.max_value is not None:
+                new_value = min(new_value, self.max_value)
+            
+            model.cutoff_ratio = new_value
+            
+            # 4. Log the update so you can see it in the console/logs
+            runner.logger.info(f'Epoch {runner.epoch + 1}: cutoff_ratio updated to {model.cutoff_ratio:.4f}')
+        else:
+            runner.logger.warning('CutoffRatioIncrementHook: Model does not have attribute "cutoff_ratio"')

@@ -1,3 +1,10 @@
+'''
+Docstring for projects.CMT.cmt_utils.transforms
+
+Set of image and lidar input transformations/augmentations that are applied during the training process
+'''
+
+
 # ------------------------------------------------------------------------
 # Copyright (c) 2023 megvii-model. All Rights Reserved.
 # ------------------------------------------------------------------------
@@ -765,7 +772,6 @@ class GlobalRotScaleTransAll(object):
                 # Ensure source keys are numpy arrays for the rotation math later
                 input_dict['lidar2cam'][i] = l2c
                 input_dict['cam2img'][i] = c2i_3x3
-
 
         if 'bbox3d_fields' not in input_dict:
             input_dict['bbox3d_fields'] = []
