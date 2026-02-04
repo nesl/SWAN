@@ -1,5 +1,6 @@
 from typing import List, Optional, Dict
 import torch
+import torch.nn.functional as F
 from torch import Tensor
 import torch.nn as nn
 from mmdet3d.models import Base3DDetector
@@ -12,23 +13,48 @@ from mmdet3d.structures import bbox3d2result
 import numpy as np
 
 
+def calculate_psnr(original: torch.Tensor, reconstructed: torch.Tensor,
+                   max_val: float = 1.0, mask: torch.Tensor = None) -> torch.Tensor:
+    """
+    Calculate Peak Signal-to-Noise Ratio between original and reconstructed images.
+
+    Args:
+        original: Original images tensor
+        reconstructed: Reconstructed images tensor of same shape as original
+        max_val: Maximum possible pixel value (1.0 for normalized, 255 for uint8)
+        mask: Optional mask tensor of same shape as original. If provided, PSNR is
+              calculated only on regions where mask == 1.
+
+    Returns:
+        PSNR value in dB (scalar tensor)
+    """
+    if mask is not None:
+        mask_bool = mask.bool()
+        if mask_bool.sum() == 0:
+            return torch.tensor(float('inf'))
+        diff_sq = (original - reconstructed) ** 2
+        mse = diff_sq[mask_bool].mean()
+    else:
+        mse = torch.mean((original - reconstructed) ** 2)
+
+    if mse == 0:
+        return torch.tensor(float('inf'))
+    psnr = 20 * torch.log10(torch.tensor(max_val, device=mse.device)) - 10 * torch.log10(mse)
+    return psnr
+
+
 def show_image(img, title):
-    """Helper function to display image with title"""
+    """Helper function to display"""
     img = np.clip(img.numpy(), 0, 1)
     plt.imshow(img)
     plt.title(title, fontsize=16)
     plt.axis('off')
 
-
-
-
-
-
 def vis_image(ori_img, pred_img, mask, model, out_dir, sample_idx):
+    """visualize the original, masked, and reconstructed images."""
     from pathlib import Path
     Path(f'{out_dir}/cam').mkdir(parents=True, exist_ok=True)
 
-    # Use img_head instead of camera_decoder (consistent naming)
     decoder = model.img_head
 
     ori_img_patches = decoder.patchify(ori_img)
@@ -41,17 +67,8 @@ def vis_image(ori_img, pred_img, mask, model, out_dir, sample_idx):
     y = decoder.unpatchify(pred_img)
     y = torch.einsum('nchw->nhwc', y).detach().cpu()
 
-    # Upsample mask to match the new patch resolution
-    # mask is [B, L_coarse] where L_coarse = grid_size[0] * grid_size[1]
-    # We need to expand it to [B, L_fine] where L_fine = L_coarse * upsampling_ratio^2
     mask = mask.detach()
-    if decoder.upsampling_ratio > 1:
-        # Each coarse patch maps to upsampling_ratio^2 fine patches
-        B = mask.shape[0]
-        mask = mask.unsqueeze(-1).repeat(1, 1, decoder.upsampling_ratio**2)
-        mask = mask.reshape(B, -1)  # [B, L_fine]
-
-    mask = mask.unsqueeze(-1).repeat(1, 1, decoder.original_patch_size**2 * 3)
+    mask = mask.unsqueeze(-1).repeat(1, 1, decoder.patch_size**2 * 3)
     mask = decoder.unpatchify(mask)
     mask = torch.einsum('nchw->nhwc', mask).detach().cpu()
 
@@ -73,14 +90,11 @@ def vis_image(ori_img, pred_img, mask, model, out_dir, sample_idx):
     plt.savefig(f"{out_dir}/cam/{sample_idx}")
     plt.close()
 
-
-
-
 @MODELS.register_module()
 class CAMERA_PRETRAIN(Base3DDetector):
     """
-    Camera-only Pretraining Model (MAE Style).
-    Follows MMEngine Base3DDetector interface.
+    Camera-only Pretraining Model with MAE.
+    Have to improve validation 
     """
 
     def __init__(self,
@@ -113,7 +127,6 @@ class CAMERA_PRETRAIN(Base3DDetector):
         """
         imgs = batch_inputs_dict.get('imgs', None)
         if imgs is None and 'img' in batch_inputs_dict:
-            # Dont know why in validation image is list
             imgs = batch_inputs_dict['img']
             #print("number of batches: ", len(imgs))
             # e.g. 1
@@ -128,20 +141,22 @@ class CAMERA_PRETRAIN(Base3DDetector):
         
         B, N, W, C, H = imgs.shape
         imgs = imgs.permute(0, 1, 3, 4, 2).contiguous() 
-
-
         imgs = imgs.view(B * N, C, H, W)
-
-        
- 
 
         # Backbone (Encoder)
         # Expects: [B*N, C, H, W]
-        # Returns: latent features, mask, and restoration ids
-        latent, mask, ids_restore = self.img_backbone(imgs, camera_only=True)
+        # Returns: multi-scale features (list of 4 tensors), mask, and restoration ids
+        encoder_outs, mask, ids_restore = self.img_backbone(imgs, camera_only=True)
 
+
+        # Check:
+        #total_patches = self.img_backbone.num_patches  # e.g., 250
+        #output_tokens = encoder_outs[-1].shape[1]    # Should be 62 if 75% masking
+
+        #print(f"Input: {total_patches} patches")
+        #print(f"Output: {output_tokens} tokens")
         return {
-            'latent': latent,
+            'encoder_outs': encoder_outs,  # List of 4 tensors from each stage
             'mask': mask,
             'ids_restore': ids_restore,
             'imgs_reshaped': imgs,
@@ -152,25 +167,24 @@ class CAMERA_PRETRAIN(Base3DDetector):
         """
         Forward pass for training.
         """
-        # 1. Extract Features (Encoder)
+        # Extract Features
         feat_dict = self.extract_feat(batch_inputs_dict)
-        
-        latent = feat_dict['latent']
+
+        encoder_outs = feat_dict['encoder_outs']  # List of 4 multi-scale features
         ids_restore = feat_dict['ids_restore']
         imgs_reshaped = feat_dict['imgs_reshaped']
         mask = feat_dict['mask']
 
-        # 2. Forward Head (Decoder)
-        # In MAE, the decoder takes latent + ids to reconstruct
-        # Note: We pass ids_restore so the decoder knows where to put the mask tokens
-        pred_imgs = self.img_head(latent, ids_restore)
+        # Decoder
+        # Decoder takes multi-scale encoder features + ids to reconstruct
+        # pass ids_restore so the decoder knows where to put the mask tokens
+        pred_imgs = self.img_head(encoder_outs, ids_restore)
 
-        # 3. Calculate Loss
-        # The decoder usually contains the reconstruction loss logic (MSE on masked patches)
+        # Calculate Loss
         losses = dict()
         losses['loss_mae_cam'] = self.img_head.forward_loss(imgs_reshaped, pred_imgs, mask)
 
-        # 4. Visualization (Optional, restricted to rank 0)
+        # Visualization (Optional, restricted to rank 0)
         if get_rank() == 0 and self.sample_idx % 500 == 0:
             # Assuming you have the vis_image helper available
             try:
@@ -185,44 +199,85 @@ class CAMERA_PRETRAIN(Base3DDetector):
     def predict(self, batch_inputs_dict: dict, batch_data_samples: List[Det3DDataSample], **kwargs):
         """
         Inference pass. Returns:
-            - original images (normalized, as input)
+            - original images (normalized, as input) 
             - reconstructed images (denormalized to original pixel distribution, full resolution)
         """
         feat_dict = self.extract_feat(batch_inputs_dict, batch_data_samples=batch_data_samples)
-        
-        latent = feat_dict['latent']
+
+        encoder_outs = feat_dict['encoder_outs']  # List of 4 multi-scale features
         ids_restore = feat_dict['ids_restore']
         imgs_reshaped = feat_dict['imgs_reshaped']          # (B*N, C, H, W) normalized
         mask = feat_dict['mask']                            # (B*N, L), 0=keep, 1=masked
-
+        #print("encoder_outs[0] shape:", encoder_outs[0].shape)
+        #print("encoder_outs[1] shape:", encoder_outs[1].shape)
+        #print("encoder_outs[2] shape:", encoder_outs[2].shape)
+        #print("encoder_outs[3] shape:", encoder_outs[3].shape)
         # Forward decoder: predictions in patch space
-        pred_patches = self.img_head(latent, ids_restore)   # (B*N, L, patch_size²*3)
+        pred_patches = self.img_head(encoder_outs, ids_restore)   # (B*N, L, patch_size²*3)
 
-        # === Correct reconstruction (same as vis_image) ===
-        # 1. Patchify original images to compute per-patch statistics
+        
+        # Patchify original images to compute per-patch statistics
         ori_patches = self.img_head.patchify(imgs_reshaped)  # (B*N, L, patch_size²*3)
         mean = ori_patches.mean(dim=-1, keepdim=True)        # (B*N, L, 1)
         var = ori_patches.var(dim=-1, keepdim=True)         # (B*N, L, 1)
 
-        # 2. Denormalize predictions (even if norm_pix_loss=False, this is safe)
+        # Denormalize predictions 
         pred_patches_denorm = pred_patches * (var + 1e-6)**0.5 + mean
-
-        # 3. Unpatchify to full resolution
+       
+        
+        # Unpatchify to full resolution
         reconstructed_imgs = self.img_head.unpatchify(pred_patches_denorm)  # (B*N, C, H, W)
 
-        # Optional: reshape back to (B, N, C, H, W) for easier downstream use
+        # reshape back to (B, N, C, H, W) for easier downstream use
         B_N = reconstructed_imgs.shape[0]
         C, H, W = reconstructed_imgs.shape[1:]
         reconstructed_imgs = reconstructed_imgs.view(
             -1, feat_dict['input_shape'][1], C, H, W  # B, N, C, H, W
-        )  # Note: original input_shape is (B, N, C, H, W)
+        )  
 
-        # Also return original images in same shape for comparison
+        # return original images in same shape for DEBUG
         original_imgs = imgs_reshaped.view(
             -1, feat_dict['input_shape'][1], C, H, W
         )
+        # Reshape mask from (B*N, L) to (B, N, L) for return
+        L = mask.shape[1]
+        mask_patches = mask.view(-1, feat_dict['input_shape'][1], L)
 
-        return original_imgs, reconstructed_imgs
+        # Upsample mask from stage 3 (grid_size) to stage 0 resolution for PSNR
+        H3, W3 = self.img_head.grid_size
+        H0, W0 = self.img_head.stage_resolutions[0]
+        patch_size = self.img_head.patch_size
+
+        # mask shape: (B*N, L) where L = H3 * W3
+        mask_2d = mask.reshape(mask.shape[0], H3, W3)
+        mask_up = F.interpolate(mask_2d.unsqueeze(1).float(), size=(H0, W0), mode='nearest')
+        mask_up = mask_up.squeeze(1)  # (B*N, H0, W0)
+
+        # Expand mask to pixel space: each patch becomes patch_size x patch_size
+        mask_pixels = mask_up.unsqueeze(-1).unsqueeze(-1)  # (B*N, H0, W0, 1, 1)
+        mask_pixels = mask_pixels.expand(-1, -1, -1, patch_size, patch_size)  # (B*N, H0, W0, p, p)
+        mask_pixels = mask_pixels.permute(0, 1, 3, 2, 4).reshape(
+            mask.shape[0], H0 * patch_size, W0 * patch_size
+        )  # (B*N, H, W)
+        mask_pixels = mask_pixels.unsqueeze(1).expand(-1, C, -1, -1)  # (B*N, C, H, W)
+        mask_pixels = mask_pixels.view(-1, feat_dict['input_shape'][1], C, H, W)  # (B, N, C, H, W)
+
+        # 1. PSNR on full image
+        psnr_full = calculate_psnr(original_imgs, reconstructed_imgs, max_val=1.0)
+        #print(f"PSNR (full image): {psnr_full.item():.2f} dB")
+
+        # 2. PSNR on visible/unmasked regions (mask == 0)
+        visible_mask = 1 - mask_pixels
+        psnr_visible = calculate_psnr(original_imgs, reconstructed_imgs, max_val=1.0, mask=visible_mask)
+        #print(f"PSNR (visible regions): {psnr_visible.item():.2f} dB")
+
+        # 3. PSNR on masked regions (mask == 1)
+        psnr_masked = calculate_psnr(original_imgs, reconstructed_imgs, max_val=1.0, mask=mask_pixels)
+        #print(f"PSNR (masked regions): {psnr_masked.item():.2f} dB")
+        selfpsnr = calculate_psnr(original_imgs, original_imgs, max_val=1.0, mask=None)
+        #print(f"PSNR (masked regions): {psnr_masked.item():.2f} dB")
+        #print(f"PNSR self{selfpsnr.item():.2f} dB")
+        return original_imgs, reconstructed_imgs, mask_patches, encoder_outs, psnr_full, psnr_visible, psnr_masked
 
     def _forward(self, batch_inputs: Tensor, batch_data_samples: OptSampleList = None):
         pass

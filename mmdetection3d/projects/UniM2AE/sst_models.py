@@ -196,10 +196,45 @@ class SSTv2(nn.Module):
             # Only include non-empty pillars
             batch_mask = coors[:, 0] == batch_itt
             this_coors = coors[batch_mask, :]
-            indices = this_coors[:, 3] * ny * nz + this_coors[:, 2] * nz + this_coors[:, 1]
+
+            # Handle empty batches
+            if this_coors.shape[0] == 0:
+                batch_canvas.append(canvas)
+                indices_back.append(torch.tensor([], dtype=torch.long, device=coors.device))
+                batch_masks.append(batch_mask)
+                continue
+
+            # Validate coordinates are within bounds
+            x_coords = this_coors[:, 3]
+            y_coords = this_coors[:, 2]
+            z_coords = this_coors[:, 1]
+            valid_mask = (x_coords >= 0) & (x_coords < nx) & \
+                         (y_coords >= 0) & (y_coords < ny) & \
+                         (z_coords >= 0) & (z_coords < nz)
+
+            # Save whether we need to filter before modifying tensors
+            needs_filtering = not valid_mask.all()
+
+            if needs_filtering:
+                x_coords = x_coords[valid_mask]
+                y_coords = y_coords[valid_mask]
+                z_coords = z_coords[valid_mask]
+
+            # Skip if no valid coordinates remain
+            if x_coords.shape[0] == 0:
+                batch_canvas.append(canvas)
+                indices_back.append(torch.tensor([], dtype=torch.long, device=coors.device))
+                batch_masks.append(batch_mask)
+                continue
+
+            indices = x_coords * ny * nz + y_coords * nz + z_coords
             indices = indices.type(torch.long)
-            voxels = voxel_feat[batch_mask, :] #[n, c]
-            voxels = voxels.t() #[c, n]
+
+            # Get corresponding voxel features (apply same valid_mask)
+            voxels = voxel_feat[batch_mask, :]
+            if needs_filtering:
+                voxels = voxels[valid_mask]
+            voxels = voxels.t()  # [c, n]
 
             canvas[:, indices] = voxels
 
@@ -243,10 +278,42 @@ class SSTv2(nn.Module):
             # Only include non-empty pillars
             batch_mask = coors[:, 0] == batch_itt
             this_coors = coors[batch_mask, :]
-            indices = this_coors[:, 2] * nx + this_coors[:, 3]
+
+            # Handle empty batches
+            if this_coors.shape[0] == 0:
+                batch_canvas.append(canvas)
+                indices_back.append(torch.tensor([], dtype=torch.long, device=coors.device))
+                batch_masks.append(batch_mask)
+                continue
+
+            # Validate coordinates are within bounds
+            y_coords = this_coors[:, 2]
+            x_coords = this_coors[:, 3]
+            valid_mask = (y_coords >= 0) & (y_coords < ny) & (x_coords >= 0) & (x_coords < nx)
+
+            # Save whether we need to filter before modifying tensors
+            needs_filtering = not valid_mask.all()
+
+            if needs_filtering:
+                y_coords = y_coords[valid_mask]
+                x_coords = x_coords[valid_mask]
+
+            # Skip if no valid coordinates remain
+            if y_coords.shape[0] == 0:
+                batch_canvas.append(canvas)
+                indices_back.append(torch.tensor([], dtype=torch.long, device=coors.device))
+                batch_masks.append(batch_mask)
+                continue
+
+            indices = y_coords * nx + x_coords
             indices = indices.type(torch.long)
-            voxels = voxel_feat[batch_mask, :] #[n, c]
-            voxels = voxels.t() #[c, n]
+
+            # Get corresponding voxel features (apply same valid_mask)
+            voxels = voxel_feat[batch_mask, :]
+            if needs_filtering:
+                voxels = voxels[valid_mask]
+            voxels = voxels.t()  # [c, n]
+
             canvas[:, indices] = voxels
 
             batch_canvas.append(canvas)
@@ -760,7 +827,6 @@ class SSTInputLayerV2Masked(SSTInputLayerV2):
 
         device = voxel_feats.device
 
-        # --- SAFETY: Validate input voxel coordinates ---
         # Filter out voxels with coordinates outside valid sparse_shape
         valid_voxel_mask = (
             (voxel_coors[:, 0] >= 0) & (voxel_coors[:, 0] < batch_size) &
@@ -806,7 +872,6 @@ class SSTInputLayerV2Masked(SSTInputLayerV2):
 
         # Add fake voxels
         if self.use_fake_voxels and fake_voxel_coors is not None:
-            # --- SAFETY: Validate fake voxel coordinates before concatenation ---
             valid_fake_mask = (
                 (fake_voxel_coors[:, 1] >= 0) & (fake_voxel_coors[:, 1] < self.vz) &
                 (fake_voxel_coors[:, 2] >= 0) & (fake_voxel_coors[:, 2] < self.vy) &
@@ -881,7 +946,6 @@ class SSTInputLayerV2Masked(SSTInputLayerV2):
         point_indices = self.get_voxel_indices(point_coors)
         voxel_indices = self.get_voxel_indices(voxel_coors)
 
-        # --- SAFETY 1: Filter Point Indices OOB ---
         # Discard points that fall outside the defined grid
         valid_point_mask = (point_indices >= 0) & (point_indices < max_num_voxels_total)
         point_indices = point_indices[valid_point_mask]
@@ -892,9 +956,8 @@ class SSTInputLayerV2Masked(SSTInputLayerV2):
         if self.use_num_points:
             n_points_per_voxel_with_zeros = torch.bincount(point_indices, minlength=max_num_voxels_total)
             
-            # --- SAFETY 2: Safe Gather for Voxel Indices ---
             # voxel_indices might be OOB if config mismatches data. 
-            # We map OOB indices to 0, read the value, then mask the result to 0.
+            # map OOB indices to 0, read the value, then mask the result to 0.
             valid_voxel_mask = (voxel_indices >= 0) & (voxel_indices < max_num_voxels_total)
             safe_voxel_indices = voxel_indices * valid_voxel_mask.long() # Map bad indices to 0
             
@@ -932,11 +995,11 @@ class SSTInputLayerV2Masked(SSTInputLayerV2):
             gt_points = torch.zeros((max_num_voxels_total, self.drop_points_th, 3), device=device, dtype=points_rel_center.dtype)
             gt_points_padding = torch.ones((max_num_voxels_total, self.drop_points_th), device=device, dtype=torch.long)
             
-            # Scatter (Safe because final_point_indices comes from filtered point_indices)
+            # Scatter 
             gt_points[final_point_indices, final_inner_inds] = final_points_rel
             gt_points_padding[final_point_indices, final_inner_inds] = 0
 
-            # --- SAFETY 3: Safe Gather for GT Points ---
+            # Gather for GT Points ---
             valid_voxel_mask = (voxel_indices >= 0) & (voxel_indices < max_num_voxels_total)
             safe_voxel_indices = voxel_indices * valid_voxel_mask.long()
 
@@ -984,7 +1047,7 @@ class SSTInputLayerV2Masked(SSTInputLayerV2):
                 valid_candidates = global_candidates[~occupied[global_candidates]]
                 
 
-                # --- SAFETY 4: Unique to prevent duplicates (Crash Fix 1) ---
+                # Check unique to prevent duplicates
                 valid_candidates = torch.unique(valid_candidates)
                 
                 if len(valid_candidates) >= n_needed:
@@ -1036,10 +1099,66 @@ class SSTInputLayerV2Masked(SSTInputLayerV2):
         return indices
 
 
+
 from mmcv.cnn import build_norm_layer
 from mmcv.ops import DynamicScatter
 from torch.nn import functional as F
 
+
+def DynamicScatterMean(features, coors, voxel_size, point_cloud_range, return_inverse=False):
+    """
+    DynamicScatterMean
+    Matches logic of DynamicScatter(mode='avg') but prevents CUDA crashes.
+    Associates points to voxels based on coordinates and averages features within each voxel.
+    """
+    device = features.device
+    vx, vy, vz = voxel_size
+
+    # Grid dimensions
+    grid_x = round((point_cloud_range[3] - point_cloud_range[0]) / vx)
+    grid_y = round((point_cloud_range[4] - point_cloud_range[1]) / vy)
+    grid_z = round((point_cloud_range[5] - point_cloud_range[2]) / vz)
+
+    # coordinates are [B, Z, Y, X]
+    # In the C kernel: "T *reduced_feats_offset = reduced_feats + reduce_to * num_feats;"
+    b_idx = coors[:, 0].long()
+    z_idx = torch.clamp(coors[:, 1].long(), 0, grid_z - 1)
+    y_idx = torch.clamp(coors[:, 2].long(), 0, grid_y - 1)
+    x_idx = torch.clamp(coors[:, 3].long(), 0, grid_x - 1)
+
+    # Flatten for unique grouping
+    # Prevent using the full grid
+    indices = (b_idx * grid_z * grid_y * grid_x +
+               z_idx * grid_y * grid_x +
+               y_idx * grid_x +
+               x_idx)
+    # find unqiue voxels
+    unique_indices, inverse_indices = torch.unique(indices, return_inverse=True)
+    num_voxels = unique_indices.shape[0]
+    
+    # Aggregate
+    # create zero tensor to hold sums
+    sum_feats = torch.zeros(num_voxels, features.shape[1], device=device, dtype=features.dtype)
+    # sum up features into their respective voxel slots
+    sum_feats.scatter_add_(0, inverse_indices.unsqueeze(1).expand(-1, features.shape[1]), features)
+    # count number of points per voxel
+    counts = torch.zeros(num_voxels, device=device, dtype=features.dtype)
+    counts.scatter_add_(0, inverse_indices, torch.ones_like(b_idx, dtype=features.dtype))
+    
+    voxel_feats = sum_feats / counts.clamp(min=1).unsqueeze(1)
+
+    # Back to [B, Z, Y, X]
+    voxel_coors = torch.zeros(num_voxels, 4, device=device, dtype=torch.long)
+    voxel_coors[:, 0] = unique_indices // (grid_z * grid_y * grid_x)
+    rem = unique_indices % (grid_z * grid_y * grid_x)
+    voxel_coors[:, 1] = rem // (grid_y * grid_x)
+    rem = rem % (grid_y * grid_x)
+    voxel_coors[:, 2] = rem // grid_x
+    voxel_coors[:, 3] = rem % grid_x
+
+    if return_inverse:
+        return voxel_feats, voxel_coors, inverse_indices
+    return voxel_feats, voxel_coors
 
 
 class DynamicVFELayer(nn.Module):
@@ -1184,73 +1303,79 @@ class DynamicVFE_New(nn.Module):
         """Map voxel features to its corresponding points.
 
         Args:
-            pts_coors (torch.Tensor): Voxel coordinate of each point.
-            voxel_mean (torch.Tensor): Voxel features to be mapped.
-            voxel_coors (torch.Tensor): Coordinates of valid voxels
+            pts_coors (torch.Tensor): Voxel coordinate of each point. [N, 4] in [b, z, y, x] order
+            voxel_mean (torch.Tensor): Voxel features to be mapped. [M, C]
+            voxel_coors (torch.Tensor): Coordinates of valid voxels [M, 4] in [b, z, y, x] order
 
         Returns:
-            torch.Tensor: Features or centers of each point.
+            torch.Tensor: Features or centers of each point. [N, C]
         """
-        # Step 1: scatter voxel into canvas
-        # Calculate necessary things for canvas creation
-        # original implementation uses int, round is to get a better precision, but potentially we have to clamp it
-        canvas_z = round(
-            (self.point_cloud_range[5] - self.point_cloud_range[2]) / self.vz)
-        canvas_y = round(
-            (self.point_cloud_range[4] - self.point_cloud_range[1]) / self.vy)
-        canvas_x = round(
-            (self.point_cloud_range[3] - self.point_cloud_range[0]) / self.vx)
-        # canvas_channel = voxel_mean.size(1)
+        # Calculate grid dimensions
+        canvas_z = round((self.point_cloud_range[5] - self.point_cloud_range[2]) / self.vz)
+        canvas_y = round((self.point_cloud_range[4] - self.point_cloud_range[1]) / self.vy)
+        canvas_x = round((self.point_cloud_range[3] - self.point_cloud_range[0]) / self.vx)
+
         if batch_size is None:
-                batch_size = int(pts_coors[:, 0].max().item()) + 1
-            
+            batch_size = int(pts_coors[:, 0].max().item()) + 1
+
+        # Handle empty inputs
+        if voxel_mean.shape[0] == 0 or pts_coors.shape[0] == 0:
+            return voxel_mean.new_zeros((pts_coors.shape[0], voxel_mean.shape[1]))
+
         canvas_len = canvas_z * canvas_y * canvas_x * batch_size
-        # Initialize with a value that indicates "empty" (e.g., -1)
-        # Use -1 so we can identify points that don't map to any valid voxel
+
+        # Initialize canvas with -1 to indicate empty voxels
         canvas = voxel_mean.new_full((canvas_len,), -1, dtype=torch.long)
 
-        
-        # Only include voxels that are within the defined grid boundaries
-        valid_vox_mask = (voxel_coors[:, 1] >= 0) & (voxel_coors[:, 1] < canvas_z) & \
-                        (voxel_coors[:, 2] >= 0) & (voxel_coors[:, 2] < canvas_y) & \
-                        (voxel_coors[:, 3] >= 0) & (voxel_coors[:, 3] < canvas_x)
-        
-        v_coors = voxel_coors[valid_vox_mask]
-        v_indices = (v_coors[:, 0] * canvas_z * canvas_y * canvas_x +
-                    v_coors[:, 1] * canvas_y * canvas_x +
-                    v_coors[:, 2] * canvas_x + v_coors[:, 3])
-        
-        # Now this is safe from illegal memory access
-        canvas[v_indices.long()] = torch.arange(
-            start=0, end=voxel_mean.size(0), device=voxel_mean.device)[valid_vox_mask]
+        # Clamp voxel coordinates to valid range before computing indices
+        v_batch = voxel_coors[:, 0].long()
+        v_z = torch.clamp(voxel_coors[:, 1].long(), 0, canvas_z - 1)
+        v_y = torch.clamp(voxel_coors[:, 2].long(), 0, canvas_y - 1)
+        v_x = torch.clamp(voxel_coors[:, 3].long(), 0, canvas_x - 1)
 
-        # --- FIX 2: SAFE POINT LOOKUP ---
-        # 1. Identify which points are inside the grid
-        valid_pts_mask = (pts_coors[:, 1] >= 0) & (pts_coors[:, 1] < canvas_z) & \
-                        (pts_coors[:, 2] >= 0) & (pts_coors[:, 2] < canvas_y) & \
-                        (pts_coors[:, 3] >= 0) & (pts_coors[:, 3] < canvas_x)
-        
-        # 2. Calculate indices for ALL points, but clamp them just to prevent a crash
-        # (We will filter the actual results using valid_pts_mask)
-        voxel_index = (pts_coors[:, 0] * canvas_z * canvas_y * canvas_x +
-                    pts_coors[:, 1] * canvas_y * canvas_x +
-                    pts_coors[:, 2] * canvas_x + pts_coors[:, 3])
-        
-        # Clamp to avoid CUDA crash if pts are way outside range
-        safe_voxel_index = torch.clamp(voxel_index, 0, canvas_len - 1)
-        
-        # 3. Gather voxel indices from canvas
-        voxel_inds = canvas[safe_voxel_index.long()]
-        
-        # 4. Final safety: A point is only valid if it was in the grid AND the voxel exists in the canvas
-        # (voxel_inds will be -1 if the voxel doesn't exist)
-        final_valid_mask = valid_pts_mask & (voxel_inds >= 0)
-        
-        # 5. Prepare output
+        # Only include voxels with valid batch indices
+        valid_vox_mask = (v_batch >= 0) & (v_batch < batch_size)
+
+        if valid_vox_mask.any():
+            v_indices = (v_batch[valid_vox_mask] * canvas_z * canvas_y * canvas_x +
+                        v_z[valid_vox_mask] * canvas_y * canvas_x +
+                        v_y[valid_vox_mask] * canvas_x +
+                        v_x[valid_vox_mask])
+
+            # Clamp indices as final safety
+            v_indices = torch.clamp(v_indices, 0, canvas_len - 1)
+
+            # Create index mapping
+            voxel_indices = torch.arange(voxel_mean.size(0), device=voxel_mean.device)
+            canvas[v_indices] = voxel_indices[valid_vox_mask]
+
+        # Clamp point coordinates to valid range
+        p_batch = pts_coors[:, 0].long()
+        p_z = torch.clamp(pts_coors[:, 1].long(), 0, canvas_z - 1)
+        p_y = torch.clamp(pts_coors[:, 2].long(), 0, canvas_y - 1)
+        p_x = torch.clamp(pts_coors[:, 3].long(), 0, canvas_x - 1)
+
+        # Compute point indices (already clamped, so always valid)
+        point_indices = (p_batch * canvas_z * canvas_y * canvas_x +
+                        p_z * canvas_y * canvas_x +
+                        p_y * canvas_x + p_x)
+
+        # Clamp as final safety
+        point_indices = torch.clamp(point_indices, 0, canvas_len - 1)
+
+        # Gather voxel indices from canvas
+        voxel_inds = canvas[point_indices]
+
+        # Points are valid if they map to an existing voxel and have valid batch
+        valid_pts_mask = (voxel_inds >= 0) & (p_batch >= 0) & (p_batch < batch_size)
+
+        # Prepare output
         center_per_point = voxel_mean.new_zeros((pts_coors.shape[0], voxel_mean.shape[1]))
-        
-        # Use only valid lookups to avoid indexing voxel_mean with -1
-        center_per_point[final_valid_mask] = voxel_mean[voxel_inds[final_valid_mask]]
+
+        if valid_pts_mask.any():
+            # Clamp voxel_inds to valid range for safety
+            safe_voxel_inds = torch.clamp(voxel_inds[valid_pts_mask], 0, voxel_mean.size(0) - 1)
+            center_per_point[valid_pts_mask] = voxel_mean[safe_voxel_inds]
 
         return center_per_point
 
@@ -1281,77 +1406,56 @@ class DynamicVFE_New(nn.Module):
         """
         if batch_size is None:
             batch_size = int(coors[:, 0].max().item()) + 1
-            #print(f'In DynamicVFE_New, inferred batch_size: {batch_size}')
         else:
-            # If it's a tensor, convert to int. If it's already an int, this is safe.
             batch_size = int(batch_size)
-            #print(f'Using provided batch_size: {batch_size}')
-        # Create a tensor for MMCV Scatter: [batch_idx, x, y, z]
-        # MMCV DynamicScatter expects floats if calculating voxels internally
-        spatial_coors = coors[:, [0, 3, 2, 1]].contiguous().long()
 
-        # --- SAFETY: Validate coordinates before scatter operations ---
         # Calculate grid dimensions
         canvas_z = round((self.point_cloud_range[5] - self.point_cloud_range[2]) / self.vz)
         canvas_y = round((self.point_cloud_range[4] - self.point_cloud_range[1]) / self.vy)
         canvas_x = round((self.point_cloud_range[3] - self.point_cloud_range[0]) / self.vx)
 
-        # Filter out points with coordinates outside valid range
-        valid_mask = (
-            (spatial_coors[:, 0] >= 0) & (spatial_coors[:, 0] < batch_size) &
-            (spatial_coors[:, 1] >= 0) & (spatial_coors[:, 1] < canvas_x) &
-            (spatial_coors[:, 2] >= 0) & (spatial_coors[:, 2] < canvas_y) &
-            (spatial_coors[:, 3] >= 0) & (spatial_coors[:, 3] < canvas_z)
-        )
+        # Clamp coordinates instead of filtering to preserve tensor shapes for backward pass
+        coors_clamped = coors.clone()
+        coors_clamped[:, 0] = torch.clamp(coors[:, 0], 0, batch_size - 1)
+        coors_clamped[:, 1] = torch.clamp(coors[:, 1], 0, canvas_z - 1)  # z
+        coors_clamped[:, 2] = torch.clamp(coors[:, 2], 0, canvas_y - 1)  # y
+        coors_clamped[:, 3] = torch.clamp(coors[:, 3], 0, canvas_x - 1)  # x
 
-        if not valid_mask.all():
-            # Filter invalid points
-            features = features[valid_mask]
-            spatial_coors = spatial_coors[valid_mask]
-            coors = coors[valid_mask]
-            if features.shape[0] == 0:
-                # Emergency fallback: return dummy outputs if all points filtered
-                dummy_feats = features.new_zeros((1, self.vfe_layers[-1].linear.out_features))
-                dummy_coors = coors.new_zeros((1, 4), dtype=torch.long)
-                return dummy_feats, dummy_coors
+
 
         features_ls = [features]
-        # origin_point_coors = features[:, :3]
+
         # Find distance of x, y, and z from cluster center
         if self._with_cluster_center:
-            voxel_mean, mean_coors = self.cluster_scatter(
-                features, spatial_coors)
-            points_mean = self.map_voxel_center_to_point(
-                coors, voxel_mean, mean_coors, batch_size=batch_size)
-            f_cluster = features[:, :3] - points_mean[:, :3]
+            # Use DynamicScatterMean with return_inverse for efficient point mapping
+            voxel_mean, mean_coors, cluster_inverse = DynamicScatterMean(
+                features[:, :3], coors_clamped,
+                (self.vx, self.vy, self.vz),
+                self.point_cloud_range,
+                return_inverse=True
+            )
+            # Map voxel mean back to points using inverse indices (much faster than canvas lookup)
+            points_mean = voxel_mean[cluster_inverse]
+            f_cluster = features[:, :3] - points_mean
             features_ls.append(f_cluster)
 
-
-        # Find distance of x, y, and z from pillar center
+        # Find distance of x, y, and z from pillar center (use clamped coords)
         if self._with_voxel_center:
             f_center = features.new_zeros(size=(features.size(0), 3))
             f_center[:, 0] = features[:, 0] - (
-                coors[:, 3].type_as(features) * self.vx + self.x_offset)
+                coors_clamped[:, 3].type_as(features) * self.vx + self.x_offset)
             f_center[:, 1] = features[:, 1] - (
-                coors[:, 2].type_as(features) * self.vy + self.y_offset)
+                coors_clamped[:, 2].type_as(features) * self.vy + self.y_offset)
             f_center[:, 2] = features[:, 2] - (
-                coors[:, 1].type_as(features) * self.vz + self.z_offset)
+                coors_clamped[:, 1].type_as(features) * self.vz + self.z_offset)
             features_ls.append(f_center)
 
         if self._with_distance:
-            # we set the distance feature as the 3D distance to origin
-            # but our output dimension is 1 rather than 3
-            # is this a mismatch?
-            points_dist = torch.norm(features[:, :3], 2, 1, keepdim=True)
-            features_ls.append(points_dist)
-
+            features_ls.append(features[:, :3]) # 3 channels (x, y, z)
 
         # Combine together feature decorations
         features = torch.cat(features_ls, dim=-1)
 
-        # features.requires_grad = True # for cam vis
-        # features.register_hook(append_grad(-1)) # for cam vis
-        # point_feat_dict[-1] = features.detach() # for cam vis
         voxel_feats, voxel_coors_out = None, None
         low_level_point_feature = features
         for i, vfe in enumerate(self.vfe_layers):
@@ -1360,22 +1464,24 @@ class DynamicVFE_New(nn.Module):
             if (i == len(self.vfe_layers) - 1 and self.fusion_layer is not None
                     and img_feats is not None):
                 point_feats = self.fusion_layer(img_feats, points, point_feats, img_metas)
-            
-            # Scatter using the [b, x, y, z] spatial coordinates
-            voxel_feats, voxel_coors_out = self.vfe_scatter(point_feats, spatial_coors)
+
+            # Use DynamicScatterMean instead of MMCV DynamicScatter to avoid CUDA backward crash
+            voxel_feats, voxel_coors_out, vfe_inverse = DynamicScatterMean(
+                point_feats, coors_clamped,
+                (self.vx, self.vy, self.vz),
+                self.point_cloud_range,
+                return_inverse=True
+            )
 
             if i != len(self.vfe_layers) - 1:
-                feat_per_point = self.map_voxel_center_to_point(
-                    coors, voxel_feats, voxel_coors_out[:, [0, 3, 2, 1]], batch_size=batch_size)
+                # Use inverse indices for efficient point mapping instead of canvas lookup
+                feat_per_point = voxel_feats[vfe_inverse]
                 features = torch.cat([point_feats, feat_per_point], dim=1)
 
         if self.return_point_feats:
             return point_feats
-
-        # 5. Convert output coordinates back to SST order [b, z, y, x]
-        voxel_coors_sst = voxel_coors_out[:, [0, 3, 2, 1]]
-        
+    
         if self.return_gt_points:
-            return voxel_feats, voxel_coors_sst, low_level_point_feature, coors
-            
-        return voxel_feats, voxel_coors_sst
+            return voxel_feats, voxel_coors_out, low_level_point_feature, coors_clamped
+
+        return voxel_feats, voxel_coors_out

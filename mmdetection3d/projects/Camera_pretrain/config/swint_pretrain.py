@@ -46,12 +46,12 @@ model = dict(
         patch_size=4,
         in_chans=3,
         embed_dim=96,
-        depths=[2, 2, 18, 2],
+        depths=[2, 2, 6, 2],
         mlp_ratio=4,
-        num_patches=(10, 25), # Derived from img_size (320/32, 800/32) -> (10, 25)
-        decoder_embed_dim=768,
-        decoder_depth=12,
-        decoder_num_heads=16,
+        num_patches=(10, 25),
+        decoder_embed_dim=256,
+        decoder_depth=2,
+        decoder_num_heads=4,
         norm_pix_loss=True,
     ),
 )

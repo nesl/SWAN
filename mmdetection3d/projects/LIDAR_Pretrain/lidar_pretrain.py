@@ -80,12 +80,14 @@ class LIDAR_PRETRAIN(Base3DDetector):
         # Voxelize
         voxels = batch_inputs_dict['voxels']['voxels']
         coors = batch_inputs_dict['voxels']['coors']
+        print("voxels shape:", voxels.shape, "coors shape:", coors.shape, "batch_size:", batch_size)
         vfe_outs = self.pts_voxel_encoder(voxels, coors, batch_size)
+        
         voxel_feats = vfe_outs[0]
         voxel_coors = vfe_outs[1]
         low_level_point_feature = vfe_outs[2] 
         point_coors = vfe_outs[3] 
-
+        print("voxel_feats shape:", voxel_feats.shape, "voxel_coors shape:", voxel_coors.shape, "low_level_point_feature shape:", low_level_point_feature.shape, "point_coors shape:", point_coors.shape, "batch_size:", batch_size)
         # Geberate mask and GT
         # Create masked voxels
         voxel_info_encoder = self.pts_middle_encoder(

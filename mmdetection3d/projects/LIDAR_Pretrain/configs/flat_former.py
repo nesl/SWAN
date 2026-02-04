@@ -84,7 +84,7 @@ model = dict(
         with_voxel_center=True,
         return_gt_points=True,
         point_cloud_range=point_cloud_range,
-        norm_cfg=dict(type='naiveSyncBN1d', eps=1e-3, momentum=0.01)
+        norm_cfg=dict(type='BN1d', eps=1e-3, momentum=0.01)
     ),
 
 
@@ -120,7 +120,7 @@ model = dict(
         output_shape=[360, 360], # Match Grid Size
         pos_temperature=10000,
         normalize_pos=False,
-        group_size=144,
+        group_size=128,
         return_sparse=True
      
     ),

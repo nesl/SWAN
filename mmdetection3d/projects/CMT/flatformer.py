@@ -76,6 +76,13 @@ class GroupAttention(nn.Module):
     def forward(self, x, pe):
         size = x.shape[0]
         num_groups = int(math.ceil(size / self.group_size))
+        padded_size = num_groups * self.group_size
+
+        # Pad if necessary to make tensor divisible by group_size
+        if size < padded_size:
+            pad_size = padded_size - size
+            x = F.pad(x, (0, 0, 0, pad_size))  # pad last dim (features) is 0, pad second-to-last (tokens)
+            pe = F.pad(pe, (0, 0, 0, pad_size))
 
         x = x.view(num_groups, self.group_size, -1)
         pe = pe.view(num_groups, self.group_size, -1)
@@ -84,7 +91,10 @@ class GroupAttention(nn.Module):
         v = x
         x, _ = self.attn(q, k, v)
 
-        x = x.view(num_groups * self.group_size, -1)
+        x = x.view(padded_size, -1)
+
+        # Remove padding
+        x = x[:size]
 
         return x
 
@@ -212,16 +222,26 @@ class FlattenedWindowMapping(nn.Module):
                 batch_start_indices_p[i] - batch_start_indices[i]
             )
             if num_per_batch[i] != num_per_batch_p[i]:
-                flat2win[
-                    batch_start_indices_p[i + 1]
-                    - self.group_size
-                    + (num_per_batch[i] % self.group_size) : batch_start_indices_p[i + 1]
-                ] = flat2win[
-                    batch_start_indices_p[i + 1]
-                    - 2 * self.group_size
-                    + (num_per_batch[i] % self.group_size) : batch_start_indices_p[i + 1]
-                    - self.group_size
-                ]
+                if num_per_batch[i] >= self.group_size:
+                    # Normal case: copy from previous group to pad incomplete last group
+                    flat2win[
+                        batch_start_indices_p[i + 1]
+                        - self.group_size
+                        + (num_per_batch[i] % self.group_size) : batch_start_indices_p[i + 1]
+                    ] = flat2win[
+                        batch_start_indices_p[i + 1]
+                        - 2 * self.group_size
+                        + (num_per_batch[i] % self.group_size) : batch_start_indices_p[i + 1]
+                        - self.group_size
+                    ]
+                else:
+                    # Small batch case: repeat existing indices to fill the padded region
+                    actual_count = num_per_batch[i].item()
+                    pad_start = batch_start_indices_p[i].item() + actual_count
+                    pad_end = batch_start_indices_p[i + 1].item()
+                    if actual_count > 0 and pad_end > pad_start:
+                        # Repeat the last valid index to fill padding
+                        flat2win[pad_start:pad_end] = flat2win[pad_start - 1]
             flat2win[batch_start_indices_p[i] : batch_start_indices_p[i + 1]] -= (
                 batch_start_indices_p[i] - batch_start_indices[i]
             )
@@ -353,6 +373,14 @@ class FlatFormer(nn.Module):
         pe = self.embedding(coords, feats.dtype)
         mappings = self.mapping(coords, batch_size)
 
+        # Pad feats and pe to match the padded size expected by mappings
+        original_size = feats.shape[0]
+        padded_size = mappings["flat2win"].shape[0]
+        if padded_size > original_size:
+            pad_size = padded_size - original_size
+            feats = F.pad(feats, (0, 0, 0, pad_size))
+            pe = F.pad(pe, (0, 0, 0, pad_size))
+
         for i, block in enumerate(self.block_list):
             # Chunk the list four at a time for each block
             if retained_layer_list is not None:
@@ -360,6 +388,9 @@ class FlatFormer(nn.Module):
                 feats = block(feats, pe, mappings, stage_layer_list)
             else:
                 feats = block(feats, pe, mappings)
+
+        # Remove padding after transformer blocks
+        feats = feats[:original_size]
 
         # 3. Output Logic
         if self.return_sparse:
@@ -383,7 +414,7 @@ class FlatFormer(nn.Module):
     def recover_bev(self, voxel_feat, coors, batch_size):
         """
         Recover BEV representation from voxel features.
-        
+        Uses clamping instead of filtering to ensure stable gradients.
         """
         ny, nx = self.output_shape
         feat_dim = voxel_feat.shape[-1]
@@ -396,58 +427,30 @@ class FlatFormer(nn.Module):
             # Only include non-empty pillars
             batch_mask = coors[:, 0] == batch_itt
             this_coors = coors[batch_mask, :]
-            
-            # CRITICAL FIX: Handle empty batches
+
+            # Handle empty batches
             if this_coors.shape[0] == 0:
                 batch_canvas.append(canvas)
                 continue
-            
-            # CRITICAL FIX: Validate coordinates are within bounds before indexing
-            y_coords = this_coors[:, 2]
-            x_coords = this_coors[:, 3]
-            
-            # Create mask for valid coordinates
-            valid_mask = (y_coords >= 0) & (y_coords < ny) & (x_coords >= 0) & (x_coords < nx)
-            
-            # C\\Filter out invalid coordinates
-            if not torch.all(valid_mask):
-                num_invalid = (~valid_mask).sum().item()
-                # Optional: uncomment to see warnings during debugging
-                # print(f"Warning: Found {num_invalid} out-of-bounds coordinates in batch {batch_itt}")
-                this_coors = this_coors[valid_mask]
-                y_coords = y_coords[valid_mask]
-                x_coords = x_coords[valid_mask]
-            
-            # Skip if no valid coordinates remain
-            if this_coors.shape[0] == 0:
-                batch_canvas.append(canvas)
-                continue
-            
-            # Calculate indices with validated coordinates
+
+            # Clamp coordinates to valid range (safer than filtering for gradients)
+            y_coords = torch.clamp(this_coors[:, 2].long(), 0, ny - 1)
+            x_coords = torch.clamp(this_coors[:, 3].long(), 0, nx - 1)
+
+            # Calculate indices (always valid due to clamping)
             indices = y_coords * nx + x_coords
-            indices = indices.type(torch.long)
-            
-            # Clamp indices as a safety measure
-            indices = torch.clamp(indices, 0, nx * ny - 1)
-            
+
             # Get corresponding voxel features
-            voxels = voxel_feat[batch_mask, :][valid_mask]  # [n, c]
+            voxels = voxel_feat[batch_mask, :]  # [n, c]
             voxels = voxels.t()  # [c, n]
 
-            # Handle duplicate indices explicitly by aggregating before scatter
-            # This ensures differentiability and proper gradient flow during backward
-            unique_indices, inverse_indices = torch.unique(indices, return_inverse=True)
+            # Use scatter_reduce for proper gradient flow and duplicate handling
+            canvas.scatter_reduce_(1,
+                                  indices.unsqueeze(0).expand(feat_dim, -1),
+                                  voxels,
+                                  reduce='mean',
+                                  include_self=False)
 
-            # Aggregate voxels with same index using mean
-            aggregated_voxels = torch.zeros(feat_dim, unique_indices.size(0),
-                                           dtype=voxels.dtype, device=voxels.device)
-            for i in range(unique_indices.size(0)):
-                mask = inverse_indices == i
-                aggregated_voxels[:, i] = voxels[:, mask].mean(dim=1)
-
-            # Now scatter with unique indices only (no duplicates, fully differentiable)
-            canvas.scatter_(1, unique_indices.unsqueeze(0).expand(feat_dim, -1), aggregated_voxels)
-            
             batch_canvas.append(canvas)
 
         batch_canvas = torch.stack(batch_canvas, 0)
