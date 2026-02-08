@@ -1,5 +1,5 @@
-# Modified to support MAE-style masking while maintaining weight compatibility
-# with MMDetection's SwinTransformer implementation.
+# Swin.py to support MAE-style masking.
+# Try to make it resemble mmdetection3d as much as possible
 from functools import partial
 from collections import OrderedDict
 from copy import deepcopy
@@ -10,6 +10,7 @@ import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
 import torch.utils.checkpoint as cp
+import mmdet
 from mmdet.models.layers import PatchEmbed
 from mmcv.cnn import build_norm_layer
 from mmcv.cnn.bricks.transformer import FFN, build_dropout
@@ -371,8 +372,8 @@ class SwinBlock(BaseModule):
         def _inner_forward(x):
             identity = x
             x = self.norm1(x)
-            x = self.attn(x, hw_shape)
-            x = self.drop_path(x) + identity
+            x = self.attn(x, hw_shape)  # window msa handles drop on its own
+            x = x + identity
 
             identity = x
             x = self.norm2(x)
@@ -980,7 +981,7 @@ class SwinTransformer(BaseModule):
 
         assert strides[0] == patch_size
 
-        self.patch_embed = PatchEmbed(
+        self.patch_embed = mmdet.models.layers.PatchEmbed(
             in_channels=in_channels,
             embed_dims=embed_dims,
             conv_type='Conv2d',
