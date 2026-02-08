@@ -1,5 +1,3 @@
-<<<<<<< HEAD
-=======
 '''
 Docstring for projects.CMT.cmt_utils.vovnet
 
@@ -8,7 +6,6 @@ VovNet was used in the original CMT model, we no longer use it in favor of the S
 
 
 
->>>>>>> modern_unimae
 # ------------------------------------------------------------------------
 # Copyright (c) 2023 megvii-model. All Rights Reserved.
 # ------------------------------------------------------------------------

@@ -36,7 +36,14 @@ get_coordinates is merged into WindowMSA class as a static method.
 SwinTransformerBlock is renamed to SwinBlock
 BasicLayer is renamed to SwinBlockSequence
 PatchEmbed is removed in favor for mmdetection version however we lost the flops
-flops are dangerous
+flops are now not fully supported due to the use of mmdetection3d implmentaitons
+
+keep kayer mask consistenct
+1. SwinTransformer.forward_features torch.split(keep_layer_mask, self.depths) is 
+now in forward and forward_masked.
+2. BasicLayer.forward is now SwinBlockSequence.forward and forward_masked.
+3. 
+
 """
 
 # Mlp is replaced
@@ -369,6 +376,7 @@ class SwinBlock(BaseModule):
             init_cfg=None)
         
     def forward(self, x, hw_shape):
+        # This is the standard version
         def _inner_forward(x):
             identity = x
             x = self.norm1(x)
@@ -790,9 +798,8 @@ class SwinBlockSequence(BaseModule):
 
     def forward(self, x, hw_shape, keep_layer_mask=None):
         """Standard forward for detection."""
-        # Is this the correct way to use the keep_layer_mask?
         for i, block in enumerate(self.blocks):
-            if keep_layer_mask is not None and keep_layer_mask[i]:
+            if keep_layer_mask is not None and not keep_layer_mask[i]:
                 continue
             x = block(x, hw_shape)
 
@@ -831,8 +838,7 @@ class SwinBlockSequence(BaseModule):
             attn_mask_shift, pos_idx_shift = attn_mask, pos_idx
 
         for i, blk in enumerate(self.blocks):
-            # Do not run the block if this is 0
-            if keep_layer_mask is not None and keep_layer_mask[i]:
+            if keep_layer_mask is not None and not keep_layer_mask[i]:
                 continue
             gblk = group_block if i % 2 == 0 else group_block_shift
             cur_attn_mask = attn_mask if i % 2 == 0 else attn_mask_shift
@@ -1132,12 +1138,12 @@ class SwinTransformer(BaseModule):
             x = x + self.absolute_pos_embed
         x = self.drop_after_pos(x)
         
-        if keep_layer_mask:
-            # We run torch.split to group it according to the depth blocks. 
-            keep_layer_mask = torch.split(keep_layer_mask, self.depths)
+        if keep_layer_mask is not None:
+            # We run torch.split to group it according to the depth blocks.
+            keep_layer_mask = torch.split(keep_layer_mask, list(self.depths))
         outs = []
         for i, stage in enumerate(self.stages):
-            x, hw_shape, out, out_hw_shape = stage(x, hw_shape, keep_layer_mask[i] if keep_layer_mask else None)
+            x, hw_shape, out, out_hw_shape = stage(x, hw_shape, keep_layer_mask[i] if keep_layer_mask is not None else None)
 
             if i in self.out_indices:
                 norm_layer = getattr(self, f'norm{i}')
@@ -1193,14 +1199,13 @@ class SwinTransformer(BaseModule):
         outs = []
         input_resolution = (H, W)
 
-        if keep_layer_mask:
-            # We run torch.split to group it according to the depth blocks. 
-            keep_layer_mask = torch.split(keep_layer_mask, self.depths)
-
+        if keep_layer_mask is not None:
+            # We run torch.split to group it according to the depth blocks.
+            keep_layer_mask = torch.split(keep_layer_mask, list(self.depths))
 
         for i, stage in enumerate(self.stages):
             x_before, x_vis, coords, mask = stage.forward_masked(
-                x_vis, coords, mask, input_resolution, True, keep_layer_mask[i] if keep_layer_mask else None)
+                x_vis, coords, mask, input_resolution, True, keep_layer_mask[i] if keep_layer_mask is not None else None)
 
             # Normalize and store output
             norm_layer = getattr(self, f'norm{i}')

@@ -209,9 +209,6 @@ class SeparateTaskHead(BaseModule):
 
         return ret_dict
 
-<<<<<<< HEAD
-
-=======
 '''
 CMTHead is used for the multimodal camera + LiDAR, as it expects both img and point features
 CMTImageHead and CMTLidarHead are used for their respective unimodal trainings
@@ -220,7 +217,6 @@ However, we can load weights universally among these heads, the only key differe
 and the internal logic. The architecture and weights themselves are identical among these heads
 
 '''
->>>>>>> modern_unimae
 @MODELS.register_module()
 class CmtHead(BaseModule):
 

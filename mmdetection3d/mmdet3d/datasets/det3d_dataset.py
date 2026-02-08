@@ -283,19 +283,19 @@ class Det3DDataset(BaseDataset):
 
             info['num_pts_feats'] = info['lidar_points']['num_pts_feats']
             info['lidar_path'] = info['lidar_points']['lidar_path']
-
-            # THIS SOMEHOW OVERWRITES MY CHANGES???
-            # if 'lidar_sweeps' in info:
-            #     for sweep in info['lidar_sweeps']:
-            #         file_suffix = sweep['lidar_points']['lidar_path'].split(
-            #             os.sep)[-1]
-            #         if 'samples' in sweep['lidar_points']['lidar_path']:
-            #             sweep['lidar_points']['lidar_path'] = osp.join(
-            #                 self.data_prefix['pts'], file_suffix)
-            #         else:
-            #             sweep['lidar_points']['lidar_path'] = osp.join(
-            #                 self.data_prefix['sweeps'], file_suffix)
-
+            
+            #  THIS SOMEHOW OVERWRITES MY CHANGES???(Why?)
+            if 'lidar_sweeps' in info:
+                for sweep in info['lidar_sweeps']:
+                    file_suffix = sweep['lidar_points']['lidar_path'].split(
+                        os.sep)[-1]
+                    if 'samples' in sweep['lidar_points']['lidar_path']:
+                        sweep['lidar_points']['lidar_path'] = osp.join(
+                            self.data_prefix['pts'], file_suffix)
+                    else:
+                        sweep['lidar_points']['lidar_path'] = osp.join(
+                            self.data_prefix['sweeps'], file_suffix)
+                        
         if self.modality['use_camera']:
             for cam_id, img_info in info['images'].items():
                 if 'img_path' in img_info:
