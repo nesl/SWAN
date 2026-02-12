@@ -265,6 +265,152 @@ def semantickitti_data_prep(info_prefix, out_dir):
         info_prefix, out_dir)
 
 
+# ============================================================================
+# NEW: Custom NuScenes dataset support
+# ============================================================================
+def custom_nuscenes_data_prep(root_path,
+                               info_prefix,
+                               dataset_name,
+                               out_dir,
+                               max_sweeps=10,
+                               custom_splits_file=None):
+    """Prepare data for custom NuScenes-format dataset with custom splits.
+    
+    This is a wrapper around nuscenes_data_prep that handles custom splits
+    by patching them into the nuscenes.utils.splits module temporarily.
+
+    Args:
+        root_path (str): Path of dataset root.
+        info_prefix (str): The prefix of info filenames.
+        dataset_name (str): The dataset class name.
+        out_dir (str): Output directory of the groundtruth database info.
+        max_sweeps (int, optional): Number of input consecutive frames.
+        custom_splits_file (str): Path to custom splits.py file.
+    """
+    import importlib.util
+    from nuscenes.utils import splits as nusc_splits
+    
+    # Load custom splits
+    spec = importlib.util.spec_from_file_location("custom_splits", custom_splits_file)
+    custom_splits_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(custom_splits_module)
+    
+    # Find train and val splits
+    train_split = None
+    val_split = None
+    available_splits = {}
+    
+    for attr_name in dir(custom_splits_module):
+        if not attr_name.startswith('_'):
+            attr_val = getattr(custom_splits_module, attr_name)
+            if isinstance(attr_val, list):
+                available_splits[attr_name] = attr_val
+    
+    # Prioritize non-mini splits
+    for attr_name, attr_val in available_splits.items():
+        attr_lower = attr_name.lower()
+        if 'train' in attr_lower and 'mini' not in attr_lower and train_split is None:
+            train_split = attr_val
+            train_split_name = attr_name
+        if 'val' in attr_lower and 'mini' not in attr_lower and val_split is None:
+            val_split = attr_val
+            val_split_name = attr_name
+    
+    # Fallback to mini splits if regular ones not found
+    if train_split is None or val_split is None:
+        for attr_name, attr_val in available_splits.items():
+            attr_lower = attr_name.lower()
+            if 'train' in attr_lower and train_split is None:
+                train_split = attr_val
+                train_split_name = attr_name
+            if 'val' in attr_lower and val_split is None:
+                val_split = attr_val
+                val_split_name = attr_name
+    
+    if train_split is None or val_split is None:
+        raise ValueError(
+            f"Could not find train/val splits in {custom_splits_file}\n"
+            f"Available splits: {list(available_splits.keys())}\n"
+            f"Found train: {train_split is not None}, Found val: {val_split is not None}"
+        )
+    
+    print(f"Using custom splits from {custom_splits_file}")
+    print(f"Using '{train_split_name}' for training: {len(train_split)} scenes")
+    print(f"Using '{val_split_name}' for validation: {len(val_split)} scenes")
+    
+    # Detect which version directory actually exists
+    import os
+    version_to_use = None
+    for possible_version in ['v1.0-trainval', 'v1.0-mini', 'v1.0-test']:
+        version_path = osp.join(root_path, possible_version)
+        if os.path.exists(version_path):
+            version_to_use = possible_version
+            print(f"Detected version directory: {version_to_use}")
+            break
+    
+    if version_to_use is None:
+        raise ValueError(
+            f"Could not find NuScenes version directory in {root_path}\n"
+            f"Expected one of: v1.0-trainval, v1.0-mini, v1.0-test"
+        )
+    
+    # Temporarily patch nuscenes splits
+    original_train = getattr(nusc_splits, 'train', None)
+    original_val = getattr(nusc_splits, 'val', None)
+    
+    try:
+        nusc_splits.train = train_split
+        nusc_splits.val = val_split
+        
+        # Use standard nuscenes converter to create the pkl files
+        nuscenes_converter.create_nuscenes_infos(
+            root_path, info_prefix, version=version_to_use, max_sweeps=max_sweeps)
+        
+        # Update pkl files to v2 format (required for GT database creation)
+        # Work around hardcoded paths in update_infos_to_v2.py by temporarily
+        # changing to the parent directory
+        import os
+        original_cwd = os.getcwd()
+        
+        # The update script expects to find data at ./data/nuscenes/
+        # So we need to be in the directory where ./data/ would resolve correctly
+        # Check if we need to change directory
+        expected_relative_path = './data/nuscenes'
+        if not osp.exists(expected_relative_path):
+            # Try to figure out the right directory
+            # If root_path is /data/HangQiu/.../data/nuscenes
+            # We need to be at /data/HangQiu/.../
+            parent_of_data = osp.dirname(osp.dirname(root_path))
+            if osp.basename(osp.dirname(root_path)) == 'data':
+                print(f"Changing to {parent_of_data} to work around hardcoded paths in update_infos_to_v2.py")
+                os.chdir(parent_of_data)
+        
+        try:
+            info_train_path = osp.join(out_dir, f'{info_prefix}_infos_train.pkl')
+            info_val_path = osp.join(out_dir, f'{info_prefix}_infos_val.pkl')
+            
+            update_pkl_infos('nuscenes', out_dir=out_dir, pkl_path=info_train_path)
+            update_pkl_infos('nuscenes', out_dir=out_dir, pkl_path=info_val_path)
+            
+            print(f"Updated info files to v2 format:")
+            print(f"  - {info_train_path}")
+            print(f"  - {info_val_path}")
+        finally:
+            # Restore original directory
+            os.chdir(original_cwd)
+        
+        # Create GT database
+        create_groundtruth_database(dataset_name, root_path, info_prefix,
+                                    f'{info_prefix}_infos_train.pkl')
+    finally:
+        # Restore original splits
+        if original_train is not None:
+            nusc_splits.train = original_train
+        if original_val is not None:
+            nusc_splits.val = original_val
+# ============================================================================
+
+
 parser = argparse.ArgumentParser(description='Data converter arg parser')
 parser.add_argument('dataset', metavar='kitti', help='name of the dataset')
 parser.add_argument(
@@ -312,6 +458,14 @@ parser.add_argument(
     action='store_true',
     help='''Whether to skip saving image and lidar.
         Only used when dataset is Waymo!''')
+# NEW: Add custom splits argument
+parser.add_argument(
+    '--custom-splits',
+    type=str,
+    default=None,
+    help='''Path to custom splits.py file for NuScenes-format datasets.
+        Example: data/sim_nuscenes/splits.py''')
+
 args = parser.parse_args()
 
 if __name__ == '__main__':
@@ -341,36 +495,58 @@ if __name__ == '__main__':
                                         args.extra_tag,
                                         f'{args.extra_tag}_infos_train.pkl')
         else:
-            train_version = f'{args.version}-trainval'
-            nuscenes_data_prep(
-                root_path=args.root_path,
-                info_prefix=args.extra_tag,
-                version=train_version,
-                dataset_name='NuScenesDataset',
-                out_dir=args.out_dir,
-                max_sweeps=args.max_sweeps)
-            test_version = f'{args.version}-test'
-            nuscenes_data_prep(
-                root_path=args.root_path,
-                info_prefix=args.extra_tag,
-                version=test_version,
-                dataset_name='NuScenesDataset',
-                out_dir=args.out_dir,
-                max_sweeps=args.max_sweeps)
+            # NEW: Handle custom splits if provided
+            if args.custom_splits:
+                custom_nuscenes_data_prep(
+                    root_path=args.root_path,
+                    info_prefix=args.extra_tag,
+                    dataset_name='NuScenesDataset',
+                    out_dir=args.out_dir,
+                    max_sweeps=args.max_sweeps,
+                    custom_splits_file=args.custom_splits)
+            else:
+                # Standard NuScenes processing (unchanged)
+                train_version = f'{args.version}-trainval'
+                nuscenes_data_prep(
+                    root_path=args.root_path,
+                    info_prefix=args.extra_tag,
+                    version=train_version,
+                    dataset_name='NuScenesDataset',
+                    out_dir=args.out_dir,
+                    max_sweeps=args.max_sweeps)
+                test_version = f'{args.version}-test'
+                nuscenes_data_prep(
+                    root_path=args.root_path,
+                    info_prefix=args.extra_tag,
+                    version=test_version,
+                    dataset_name='NuScenesDataset',
+                    out_dir=args.out_dir,
+                    max_sweeps=args.max_sweeps)
     elif args.dataset == 'nuscenes' and args.version == 'v1.0-mini':
         if args.only_gt_database:
             create_groundtruth_database('NuScenesDataset', args.root_path,
                                         args.extra_tag,
                                         f'{args.extra_tag}_infos_train.pkl')
         else:
-            train_version = f'{args.version}'
-            nuscenes_data_prep(
-                root_path=args.root_path,
-                info_prefix=args.extra_tag,
-                version=train_version,
-                dataset_name='NuScenesDataset',
-                out_dir=args.out_dir,
-                max_sweeps=args.max_sweeps)
+            # NEW: Handle custom splits if provided
+            if args.custom_splits:
+                custom_nuscenes_data_prep(
+                    root_path=args.root_path,
+                    info_prefix=args.extra_tag,
+                    dataset_name='NuScenesDataset',
+                    out_dir=args.out_dir,
+                    max_sweeps=args.max_sweeps,
+                    custom_splits_file=args.custom_splits)
+            else:
+                # Standard NuScenes mini processing (unchanged)
+                train_version = f'{args.version}'
+                nuscenes_data_prep(
+                    root_path=args.root_path,
+                    info_prefix=args.extra_tag,
+                    version=train_version,
+                    dataset_name='NuScenesDataset',
+                    out_dir=args.out_dir,
+                    max_sweeps=args.max_sweeps)
     elif args.dataset == 'waymo':
         waymo_data_prep(
             root_path=args.root_path,

@@ -235,6 +235,7 @@ class NuScenesMetric(BaseMetric):
         eval_set_map = {
             'v1.0-mini': 'mini_val',
             'v1.0-trainval': 'val',
+            'simulate_val': 'sim_val',
         }
         nusc_eval = NuScenesEval(
             nusc,

@@ -951,7 +951,7 @@ class SwinTransformer(BaseModule):
                  convert_weights=False,
                  frozen_stages=-1,
                  init_cfg=None):
-
+        print("Initializing custom implemented SwinTransformer")
         self.convert_weights = convert_weights
         self.frozen_stages = frozen_stages
 

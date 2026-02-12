@@ -1,4 +1,5 @@
 # Copyright (c) OpenMMLab. All rights reserved.
+# Modify to support our simulated dataset
 import os
 from collections import OrderedDict
 from os import path as osp
