@@ -2,8 +2,15 @@ from os import path as osp
 from typing import Optional, Dict, Union, List
 import random
 
-from mmdet3d.registry import DATASETS
+from mmdet3d.registry import DATASETS, METRICS
 from mmdet3d.datasets.nuscenes_dataset import NuScenesDataset
+
+# added
+from mmdet3d.evaluation.metrics.nuscenes_metric import NuScenesMetric
+from scene_split import train_day, train_night, train_rain, train_dry, val_day, val_night, val_rain, val_dry, train, val
+
+
+from nuscenes.nuscenes import NuScenes
 
 
 @DATASETS.register_module()
@@ -553,3 +560,263 @@ class NuScenesDiverseCorruptDataset(NuScenesDataset):
                     'camera_severity': 3,
                 }
             return data_info
+
+# ---------------------------------------------------------------------------
+# Scene-split variants of the corrupt datasets and a matching metric.
+# ---------------------------------------------------------------------------
+nusc = None
+
+@DATASETS.register_module()
+class NuScenesCorruptSplitDataset(NuScenesCorruptDataset):
+    """
+    NuScenes Dataset with Corruption Support and Custom Scene Splits.
+    add a split argument to filter the data.
+    """
+    def __init__(self,
+                 split = None,
+                 **kwargs) -> None:
+        global nusc
+        self.split = split
+        assert self.split in ['day', 'night', 'rain', 'dry',None], \
+            f"Invalid split: {split}. Must be one of ['day', 'night', 'rain', 'dry', None]"
+        self.nusc = None
+        self.data_root = kwargs.get('data_root', None)
+        if self.split is not None:
+            print('initializing NuScenes devkit...')
+            # If a split is specified, filter scenes accordingly
+            if nusc is None:
+                nusc = NuScenes(version="v1.0-trainval", dataroot=self.data_root, verbose=False)
+            self.nusc = nusc
+
+        # Call parent constructor
+        super().__init__(**kwargs)
+        
+    def filter_data(self) -> List[dict]:
+        # Find the scene token in the annotation use it to get their scene name and filter based on the split
+        # currently we dont care whether it is train or val to make config simpler
+        print('custom filter data for split:', self.split)
+        print('original data list length:', len(self.data_list))
+    
+        if self.split:
+            if getattr(self, 'nusc', None) is None:
+                raise ValueError("NuScenes instance not initialized. Ensure that the parent constructor is called with a valid data_root.")
+            new_data_list = []
+            for data_info in self.data_list:
+                sample_token = data_info['token']
+                sample = self.nusc.get('sample', sample_token)
+                scene_token = sample['scene_token']
+                scene = self.nusc.get('scene', scene_token)
+                scene_name = scene['name']
+                if self.split == 'day':
+                    if scene_name in train_day or scene_name in val_day:
+                        new_data_list.append(data_info)
+                elif self.split == 'night':
+                    if scene_name in train_night or scene_name in val_night:
+                        new_data_list.append(data_info)
+                elif self.split == 'rain':
+                    if scene_name in train_rain or scene_name in val_rain:
+                        new_data_list.append(data_info)
+                elif self.split == 'dry':
+                    if scene_name in train_dry or scene_name in val_dry:
+                        new_data_list.append(data_info)
+                else:
+                    # 
+                    continue
+            self.data_list = new_data_list
+
+
+        print('filtered data list length:', len(self.data_list))
+        return self.data_list
+
+
+
+@DATASETS.register_module()
+class NuScenesCorruptDiverseSplitDataset(NuScenesDiverseCorruptDataset):
+    """
+    NuScenes Dataset with Corruption Support and Custom Scene Splits.
+    add a split argument to filter the data.
+    """
+    def __init__(self,
+                 split = None,
+                 **kwargs) -> None:
+        global nusc
+        self.split = split
+        assert self.split in ['day', 'night', 'rain', 'dry',None], \
+            f"Invalid split: {split}. Must be one of ['day', 'night', 'rain', 'dry', None]"
+        self.nusc = None
+        self.data_root = kwargs.get('data_root', None)
+        if self.split is not None:
+            print('initializing NuScenes devkit...')
+            # If a split is specified, filter scenes accordingly
+            if nusc is None:
+                nusc = NuScenes(version="v1.0-trainval", dataroot=self.data_root, verbose=False)
+            self.nusc = nusc
+
+        # Call parent constructor
+        super().__init__(**kwargs)
+        
+    def filter_data(self) -> List[dict]:
+        # Find the scene token in the annotation use it to get their scene name and filter based on the split
+        # currently we dont care whether it is train or val to make config simpler
+        print('custom filter data for split:', self.split)
+        print('original data list length:', len(self.data_list))
+    
+        if self.split:
+            if getattr(self, 'nusc', None) is None:
+                raise ValueError("NuScenes instance not initialized. Ensure that the parent constructor is called with a valid data_root.")
+            new_data_list = []
+            for data_info in self.data_list:
+                sample_token = data_info['token']
+                sample = self.nusc.get('sample', sample_token)
+                scene_token = sample['scene_token']
+                scene = self.nusc.get('scene', scene_token)
+                scene_name = scene['name']
+                if self.split == 'day':
+                    if scene_name in train_day or scene_name in val_day:
+                        new_data_list.append(data_info)
+                elif self.split == 'night':
+                    if scene_name in train_night or scene_name in val_night:
+                        new_data_list.append(data_info)
+                elif self.split == 'rain':
+                    if scene_name in train_rain or scene_name in val_rain:
+                        new_data_list.append(data_info)
+                elif self.split == 'dry':
+                    if scene_name in train_dry or scene_name in val_dry:
+                        new_data_list.append(data_info)
+                else:
+                    # 
+                    continue
+            self.data_list = new_data_list
+
+
+        print('filtered data list length:', len(self.data_list))
+        return self.data_list
+
+    
+@METRICS.register_module()
+class NuScenesPartialMetric(NuScenesMetric):
+    """NuScenes evaluation metric that evaluates on a specific scene split.
+
+    This metric extends NuScenesMetric to support evaluating only on subsets
+    of the validation set defined by scene splits (day/night/rain/dry) from
+    scene_split.py. It monkey-patches nuscenes.utils.splits.create_splits_scenes
+    to inject the custom split, then uses it as the eval_set.
+
+    Args:
+        data_root (str): Path of dataset root.
+        ann_file (str): Path of annotation file.
+        metric (str or List[str]): Metrics to be evaluated. Defaults to 'bbox'.
+        split (str, optional): Scene split to evaluate on.
+            Options: 'day', 'night', 'rain', 'dry', None.
+            If None, evaluates on all val scenes (default nuscenes behavior).
+        **kwargs: Other arguments passed to NuScenesMetric.
+    """
+
+    VALID_SPLITS = ['day', 'night', 'rain', 'dry']
+
+    SPLIT_SCENES = {
+        'day': val_day,
+        'night': val_night,
+        'rain': val_rain,
+        'dry': val_dry,
+    }
+
+    def __init__(self,
+                 data_root: str,
+                 ann_file: str,
+                 metric: str = 'bbox',
+                 split: Optional[str] = None,
+                 **kwargs) -> None:
+        global nusc
+        self.nusc = None
+        self.split = split
+        if split is not None:
+            assert split in self.VALID_SPLITS, \
+                f"Invalid split: {split}. Must be one of {self.VALID_SPLITS}"
+        if nusc is None:
+            nusc = NuScenes(version="v1.0-trainval", dataroot=data_root, verbose=False)
+        self.nusc = nusc  # Will be initialized in the dataset and used in evaluation
+
+        super().__init__(
+            data_root=data_root,
+            ann_file=ann_file,
+            metric=metric,
+            **kwargs)
+
+    def _evaluate_single(self,
+                        result_path: str,
+                        classes: Optional[List[str]] = None,
+                        result_name: str = 'pred_instances_3d') -> Dict[str, float]:
+        """Evaluation for a single model in nuScenes protocol.
+
+        If a split is set, patches create_splits_scenes to include the
+        split's scene list and uses it as eval_set. Otherwise falls back
+        to the standard 'val' eval_set.
+        """
+        
+        from nuscenes.eval.detection.evaluate import NuScenesEval
+        import mmengine
+
+        output_dir = osp.join(*osp.split(result_path)[:-1])
+
+        if self.split is not None:
+            eval_set = f'val_{self.split}'
+            scene_list = self.SPLIT_SCENES[self.split]
+
+            # DetectionEval uses is_predefined_split() to decide the code
+            # path.  'val_day' etc. are NOT predefined, so it takes the
+            # custom-split branch which calls get_samples_of_custom_split()
+            # and correctly filters BOTH predictions and GT to the same
+            # sample tokens.  We monkey-patch that function (in the
+            # evaluate module namespace where it is looked up) to return
+            # the sample tokens for our scene list.
+            from nuscenes.eval.detection import evaluate as _eval_mod
+            from nuscenes.eval.common.loaders import get_samples_of_scenes
+            original_get_samples = _eval_mod.get_samples_of_custom_split
+
+            def patched_get_samples(split_name, nusc):
+                if split_name == eval_set:
+                    return get_samples_of_scenes(
+                        scene_names=scene_list, nusc=nusc)
+                return original_get_samples(split_name, nusc)
+
+            _eval_mod.get_samples_of_custom_split = patched_get_samples
+        else:
+            eval_set = 'val'
+
+        try:
+            nusc_eval = NuScenesEval(
+                self.nusc,
+                config=self.eval_detection_configs,
+                result_path=result_path,
+                eval_set=eval_set,
+                output_dir=output_dir,
+                verbose=False)
+
+            nusc_eval.main(render_curves=False)
+        finally:
+            # Restore original function if we patched it
+            if self.split is not None:
+                _eval_mod.get_samples_of_custom_split = original_get_samples
+
+        # Record metrics
+        metrics = mmengine.load(osp.join(output_dir, 'metrics_summary.json'))
+        detail = dict()
+        metric_prefix = f'{result_name}_NuScenes'
+
+        for name in classes:
+            for k, v in metrics['label_aps'][name].items():
+                val = float(f'{v:.4f}')
+                detail[f'{metric_prefix}/{name}_AP_dist_{k}'] = val
+            for k, v in metrics['label_tp_errors'][name].items():
+                val = float(f'{v:.4f}')
+                detail[f'{metric_prefix}/{name}_{k}'] = val
+
+        for k, v in metrics['tp_errors'].items():
+            val = float(f'{v:.4f}')
+            detail[f'{metric_prefix}/{self.ErrNameMapping[k]}'] = val
+
+        detail[f'{metric_prefix}/NDS'] = metrics['nd_score']
+        detail[f'{metric_prefix}/mAP'] = metrics['mean_ap']
+
+        return detail
