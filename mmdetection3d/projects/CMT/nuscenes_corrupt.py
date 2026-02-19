@@ -9,7 +9,9 @@ from mmdet3d.datasets.nuscenes_dataset import NuScenesDataset
 from mmdet3d.evaluation.metrics.nuscenes_metric import NuScenesMetric
 from scene_split import train_day, train_night, train_rain, train_dry, val_day, val_night, val_rain, val_dry, train, val
 
-
+from mmengine import Config, load
+from mmengine.evaluator import BaseMetric
+from mmengine.logging import MMLogger
 from nuscenes.nuscenes import NuScenes
 
 
@@ -742,6 +744,61 @@ class NuScenesPartialMetric(NuScenesMetric):
             ann_file=ann_file,
             metric=metric,
             **kwargs)
+        
+    def compute_metrics(self, results: List[dict]) -> Dict[str, float]:
+        """Compute the metrics from processed results.
+
+        Args:
+            results (List[dict]): The processed results of each batch.
+
+        Returns:
+            Dict[str, float]: The computed metrics. The keys are the names of
+            the metrics, and the values are corresponding results.
+        """
+        print('computing metrics for split:', self.split)
+        logger: MMLogger = MMLogger.get_current_instance()
+
+        classes = self.dataset_meta['classes']
+        self.version = self.dataset_meta['version']
+        # load annotations
+        self.data_infos = load(
+            self.ann_file, backend_args=self.backend_args)['data_list']
+        # filter out data info not in the split if split is specified
+        if self.split is not None:
+            filtered_data_infos = []
+            scene_list = self.SPLIT_SCENES[self.split]
+            for info in self.data_infos:
+                # get scene token from sample token
+                sample_token = info['token']
+                sample = self.nusc.get('sample', sample_token)
+                scene_token = sample['scene_token']
+                scene_name = self.nusc.get('scene', scene_token)['name']
+                if scene_name in scene_list:
+                    filtered_data_infos.append(info)
+            self.data_infos = filtered_data_infos
+
+
+        result_dict, tmp_dir = self.format_results(results, classes,
+                                                   self.jsonfile_prefix)
+
+        metric_dict = {}
+
+        if self.format_only:
+            logger.info(
+                f'results are saved in {osp.basename(self.jsonfile_prefix)}')
+            return metric_dict
+
+        for metric in self.metrics:
+            ap_dict = self.nus_evaluate(
+                result_dict, classes=classes, metric=metric, logger=logger)
+            for result in ap_dict:
+                metric_dict[result] = ap_dict[result]
+
+        if tmp_dir is not None:
+            tmp_dir.cleanup()
+        return metric_dict
+
+
 
     def _evaluate_single(self,
                         result_path: str,
