@@ -170,14 +170,14 @@ class BEVFusion(Base3DDetector):
             points = [point.float() for point in points]
             feats, coords, sizes = self.voxelize(points)
             batch_size = coords[-1, 0] + 1
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
+        # start = torch.cuda.Event(enable_timing=True)
+        # end = torch.cuda.Event(enable_timing=True)
 
-        start.record()
+        # start.record()
         x = self.pts_middle_encoder(feats, coords, batch_size)
-        end.record()
-        torch.cuda.synchronize()
-        print(start.elapsed_time(end))
+        # end.record()
+        # torch.cuda.synchronize()
+        # print(start.elapsed_time(end))
         return x
 
     @torch.no_grad()
@@ -305,3 +305,67 @@ class BEVFusion(Base3DDetector):
         losses.update(bbox_loss)
 
         return losses
+
+
+
+from mmengine.hooks import Hook
+from mmengine.registry import HOOKS
+from mmengine.model import is_model_wrapper
+import torch.nn as nn
+
+@HOOKS.register_module()
+class FreezeLayersHookBEV(Hook):
+    def __init__(self, train_module_names):
+        self.train_module_names = [train_module_names] if isinstance(train_module_names, str) else train_module_names
+
+    def _apply_freeze_logic(self, runner):
+        model = runner.model.module if is_model_wrapper(runner.model) else runner.model
+        
+        for name, module in model.named_modules():
+            is_unfrozen = any(name == m or name.startswith(f"{m}.") for m in self.train_module_names)
+            
+            if is_unfrozen:
+                module.train()
+                for param in module.parameters():
+                    param.requires_grad = True
+                # print(f"✅ Unfrozen module: {name}")
+
+            else:
+                # --- THE SURGICAL FIX ---
+                # 1. Keep the module in .train() so self.training is TRUE
+                # This ensures prepare_for_dn() still runs its logic.
+                module.train() 
+                
+                # 2. Kill the gradients
+                for param in module.parameters():
+                    param.requires_grad = False
+                
+                # 3. IF it's a BatchNorm layer, force it to behave like EVAL
+                if isinstance(module, (nn.modules.batchnorm._BatchNorm, nn.LayerNorm)):
+                    module.eval() # This stops running_mean updates
+                    # Ensure it stays locked even if parent calls .train()
+                    module.track_running_stats = False
+
+    def before_run(self, runner):
+        """Initial setup and parameter count logging."""
+        self._apply_freeze_logic(runner)
+        
+        # Count params for verification
+        model = runner.model.module if is_model_wrapper(runner.model) else runner.model
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        runner.logger.info(f"❄️ FreezeLayersHook: {trainable:,} trainable parameters.")
+
+    def before_train_epoch(self, runner):
+        """
+        CRITICAL: Re-apply freeze logic every epoch. 
+        MMEngine calls model.train() at the start of each epoch, 
+        which would otherwise unfreeze your BatchNorm stats.
+        """
+        self._apply_freeze_logic(runner)
+
+    def before_train_iter(self, runner, batch_idx, data_batch=None):
+        """
+        Force the mode back to eval immediately before the forward pass.
+        This catches any internal .train() calls that happen after the epoch starts.
+        """
+        self._apply_freeze_logic(runner)

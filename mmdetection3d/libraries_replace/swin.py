@@ -18,6 +18,8 @@ from mmengine.utils import to_2tuple
 
 from mmdet.registry import MODELS
 from ..layers import PatchEmbed, PatchMerging
+from mmengine.dist import get_dist_info
+from mmengine.logging import MessageHub
 
 
 class WindowMSA(BaseModule):
@@ -378,6 +380,36 @@ class SwinBlock(BaseModule):
 
         return x
 
+def _gumbel_sigmoid(
+    logits, tau=1, hard=False, eps=1e-10, training = True, threshold = 0.5
+):
+    if training :
+        # ~Gumbel(0,1)`
+        gumbels1 = (
+            -torch.empty_like(logits, memory_format=torch.legacy_contiguous_format)
+            .exponential_()
+            .log()
+        )
+        gumbels2 = (
+            -torch.empty_like(logits, memory_format=torch.legacy_contiguous_format)
+            .exponential_()
+            .log()
+        )
+        # Difference of two` gumbels because we apply a sigmoid
+        gumbels1 = (logits + gumbels1 - gumbels2) / tau
+        y_soft = gumbels1.sigmoid()
+    else :
+        y_soft = logits.sigmoid()
+
+    if hard:
+        # Straight through.
+        y_hard = torch.zeros_like(
+            logits, memory_format=torch.legacy_contiguous_format
+        ).masked_fill(y_soft > threshold, 1.0)
+        ret = y_hard - y_soft.detach() + y_soft
+    else:
+        ret = y_soft
+    return ret
 
 class SwinBlockSequence(BaseModule):
     """Implements one stage in Swin Transformer.
@@ -453,19 +485,57 @@ class SwinBlockSequence(BaseModule):
 
         self.downsample = downsample
     # list of 0, 1's where 0 means a layer is dropped and 1 is layer is kept
-    def forward(self, x, hw_shape, retained_layer_list=None, controller_training=False):
+    def forward(self, x, hw_shape, retained_layer_list=None, controller_training=False, early_exit_camera=None, losses=None, block_start_layer=0, remaining_layer_count=None):
+        decision_list = []
+        logits_list = []
+
+        early_exit_training = early_exit_camera is not None and early_exit_camera.training
+
         for i, block in enumerate(self.blocks):
             # If list does not exist OR and the value is 1 OR controller is training
             # Retained layer list can either be controller decided (B_size, N), or (1, N) for ordinary layerdrop
-            if controller_training or retained_layer_list is None or retained_layer_list[0][i]:
+            if early_exit_training or (early_exit_camera is not None and not self.training and retained_layer_list[0][i]):
+                raw_logits = early_exit_camera(x, block_start_layer + i, torch.tensor(remaining_layer_count).to(x.device))[:, 0] # Weird shape, don't want to squeeze
+                for layer_idx in range(len(remaining_layer_count)):
+                    remaining_layer_count[layer_idx] -= retained_layer_list[:, i].int().detach()[layer_idx].item()
+
+                logits_list.append(raw_logits[0].item()) # Append batch 1
+
+                current_epoch = 1
+                if early_exit_camera.training:
+                    message_hub = MessageHub.get_current_instance()
+                    current_epoch = message_hub.get_info('epoch') + 1
+                
+                # Outputted binary decision
+                decision = _gumbel_sigmoid(raw_logits, training=early_exit_camera.training, tau=max(0.25/current_epoch, 0.05), hard=not early_exit_camera.training) # b_size
+
+                decision_list.append(decision[0].item())
+                # Ignore this layer during inference
+                if not early_exit_camera.training:
+                    if decision[0].item() == 0:
+                        continue
+
+            if controller_training or early_exit_training or retained_layer_list is None or retained_layer_list[0][i]:
                 x_new = block(x, hw_shape)
-                if controller_training:
-                    retained_layers = torch.repeat_interleave(retained_layer_list[:, i], 6)
+                if controller_training or early_exit_training:
+                    batch_selected_layers = retained_layer_list[:, i]
+                    # Multiply controller output by the early-exit decision
+                    if early_exit_camera is not None:
+                        batch_selected_layers = batch_selected_layers * decision
+                        # We want to minimize the number of layers selected
+                        if 'early_exit_loss' not in losses:
+                            losses['early_exit_loss'] = torch.mean(torch.relu(raw_logits + 2)) / 40
+                        else:
+                            losses['early_exit_loss'] += torch.mean(torch.relu(raw_logits + 2)) / 40
+
+                    retained_layers = torch.repeat_interleave(batch_selected_layers, 6)
                     x = x * (1 - retained_layers[:, None, None]) + x_new * retained_layers[:, None, None]
                 else:
                     x = x_new
 
-
+        if get_dist_info()[0] == 0 and early_exit_camera is not None:
+            print("Image Early Exit Logits", logits_list)
+            print("Image Early Exit Decisions", decision_list)
         if self.downsample:
             x_down, down_hw_shape = self.downsample(x, hw_shape)
             return x_down, down_hw_shape, x, hw_shape
@@ -753,7 +823,7 @@ class SwinTransformer(BaseModule):
             # load state_dict
             self.load_state_dict(state_dict, False)
 
-    def forward(self, x, retained_layer_list=None, controller_training=False):
+    def forward(self, x, retained_layer_list=None, controller_training=False, early_exit_camera=None, losses=None):
         x, hw_shape = self.patch_embed(x)
 
         if self.use_abs_pos_embed:
@@ -762,6 +832,10 @@ class SwinTransformer(BaseModule):
 
         outs = []
         current_layer = 0
+        remaining_layer_count=[12] * (x.shape[0]//6)
+        if early_exit_camera is not None:
+            remaining_layer_count = torch.round(torch.sum(retained_layer_list, dim=-1)).int().detach().tolist()
+    
         for i, stage in enumerate(self.stages):
             stage_layer_list = None
             if retained_layer_list is not None:
@@ -769,7 +843,7 @@ class SwinTransformer(BaseModule):
                 stage_layer_list = retained_layer_list[:, current_layer:current_layer + len(stage.blocks)]
                 current_layer += len(stage.blocks)
 
-            x, hw_shape, out, out_hw_shape = stage(x, hw_shape, stage_layer_list, controller_training)
+            x, hw_shape, out, out_hw_shape = stage(x, hw_shape, stage_layer_list, controller_training, early_exit_camera=early_exit_camera, losses=losses, block_start_layer=current_layer-len(stage.blocks), remaining_layer_count=remaining_layer_count)
 
             if i in self.out_indices:
                 norm_layer = getattr(self, f'norm{i}')

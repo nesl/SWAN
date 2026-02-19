@@ -329,7 +329,7 @@ test_pipeline = [
 ]
 
 train_dataloader = dict(
-    batch_size=12,
+    batch_size=11,
     num_workers=12,
     persistent_workers=True,
     sampler=dict(type='DefaultSampler', shuffle=True),
@@ -420,8 +420,18 @@ find_unused_parameters=True
 
 optim_wrapper = dict(
     type='AmpOptimWrapper',
-    optimizer=dict(type='AdamW', lr=1e-3, weight_decay=0.01),
-    clip_grad=dict(max_norm=35, norm_type=2))
+    optimizer=dict(
+        type='AdamW', 
+        lr=1e-3, 
+        weight_decay=0.01,   
+    ),
+    clip_grad=dict(max_norm=35, norm_type=2),
+    # paramwise_cfg=dict(
+    #     custom_keys={
+    #         'controller.output_head': dict(lr_mult=0.1),
+    #     }
+    # )
+)
 
 custom_hooks = [
     dict(type='FreezeLayersHook', train_module_names=['controller'])

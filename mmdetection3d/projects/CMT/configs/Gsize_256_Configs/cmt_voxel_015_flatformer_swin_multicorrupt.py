@@ -33,7 +33,8 @@ dataset_type = 'NuScenesDiverseCorruptDataset'
 data_root = '/workspace/mmdetection3d/data/nuscenes/'
 corruption_root = '/workspace/mmdetection3d/data/multicorrupt'  # Root directory where corrupted data is stored
 # beamsreducing is lidar only, dark is cam only
-corruptions = ['beamsreducing', 'dark', 'snow', 'fog', 'motionblur']
+corruptions = ['beamsreducing','dark','lidar_fog','camera_fog','lidar_motionblur','camera_motionblur','none']
+
 
 data_prefix = dict(
     pts='samples/LIDAR_TOP',
@@ -327,7 +328,7 @@ test_pipeline = [
 ]
 
 train_dataloader = dict(
-    batch_size=24,
+    batch_size=8,
     num_workers=12,
     persistent_workers=True,
     sampler=dict(type='DefaultSampler', shuffle=True),

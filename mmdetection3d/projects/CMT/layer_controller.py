@@ -10,6 +10,8 @@ from mmdet3d.registry import MODELS
 from mmcv.cnn.bricks.transformer import TransformerLayerSequence
 import math
 from mmengine.dist import get_dist_info
+from mmengine.logging import MessageHub
+import random
 
 EPSILON = np.finfo(np.float32).tiny
 
@@ -45,6 +47,47 @@ class SubsetOperator(torch.nn.Module):
             res = khot
 
         return res
+    
+class NeuralSort (torch.nn.Module):
+    def __init__(self, tau=1.0, hard=False):
+        super(NeuralSort, self).__init__()
+        self.hard = hard
+        self.tau = tau
+
+    def forward(self, scores):
+        """
+        scores: elements to be sorted. Typical shape: batch_size x n x 1
+        """
+        if not self.hard:
+            scores = scores + sample_gumbel(scores.shape, 1)
+        scores = scores.unsqueeze(-1)
+        bsize = scores.size()[0]
+        dim = scores.size()[1]
+        one = torch.cuda.FloatTensor(dim, 1).fill_(1)
+
+        A_scores = torch.abs(scores - scores.permute(0, 2, 1))
+        B = torch.matmul(A_scores, torch.matmul(
+            one, torch.transpose(one, 0, 1)))
+        scaling = (dim + 1 - 2 * (torch.arange(dim) + 1)
+                   ).type(torch.cuda.FloatTensor)
+        C = torch.matmul(scores, scaling.unsqueeze(0))
+
+        P_max = (C-B).permute(0, 2, 1)
+        sm = torch.nn.Softmax(-1)
+        P_hat = sm(P_max / self.tau)
+
+        if self.hard:
+            P = torch.zeros_like(P_hat, device='cuda')
+            b_idx = torch.arange(bsize).repeat([1, dim]).view(dim, bsize).transpose(
+                dim0=1, dim1=0).flatten().type(torch.cuda.LongTensor)
+            r_idx = torch.arange(dim).repeat(
+                [bsize, 1]).flatten().type(torch.cuda.LongTensor)
+            c_idx = torch.argmax(P_hat, dim=-1).flatten()  # this is on cuda
+            brc_idx = torch.stack((b_idx, r_idx, c_idx))
+
+            P[brc_idx[0], brc_idx[1], brc_idx[2]] = 1
+            P_hat = (P-P_hat).detach() + P_hat
+        return P_hat
 
 # Used to sample top k, returning 1's in the top k indices and 0's otherwise
 def get_top_k(x, k=8, zero_value=0):
@@ -112,7 +155,7 @@ class ConvLayerController(nn.Module):
     
     # Total layer refers to the total available compute budget
     # TODO CHANGE THIS back to 256
-    def __init__(self, embed_dim=256, num_classes=6, total_layers_img=12, total_layers_lidar=8, layer_budget=8):
+    def __init__(self, embed_dim=256, num_classes=8, total_layers_img=12, total_layers_lidar=8, layer_budget=8):
         super(ConvLayerController, self).__init__()
 
         self.voxel_extractor = nn.Sequential(
@@ -145,8 +188,8 @@ class ConvLayerController(nn.Module):
         self.img_adapter = nn.Linear(360, embed_dim//2)
         self.cls = nn.Parameter(torch.randn(1, embed_dim))
 
-        self.additional_layers = layer_budget - 2 # how many layers we are allocating, first layer is always 1
-
+        self.additional_layers = layer_budget # how many layers we are allocating, first layer is always 1
+        self.layer_budget = layer_budget
         self.output_head = nn.Sequential(
             nn.Linear(embed_dim, 200, bias=False),
             nn.ReLU(),
@@ -169,7 +212,13 @@ class ConvLayerController(nn.Module):
         return canvas
     
     # Temperature define peakiness of the gumbel softmax
-    def forward(self, voxel_features, controller_coors, raw_image, flatformer_layers, temp=1, discretization_method = 'admn'):
+    def forward(self, voxel_features, controller_coors, raw_image, flatformer_layers, temp=1, discretization_method = 'neuralsort'):
+
+        current_epoch = 1
+        if self.training:
+            message_hub = MessageHub.get_current_instance()
+            current_epoch = message_hub.get_info('epoch') + 1
+
         B = raw_image.shape[0]
 
         bev_grid = self.manual_scatter(voxel_features, controller_coors, B, (720, 720), 128)
@@ -186,9 +235,9 @@ class ConvLayerController(nn.Module):
 
         logits = self.output_head(joint_embed) # logits are of shape B_size x 24 \
         
-        # First logit for each modality will ALWAYS be chosen, set it to -99 to avoid influencing the softmax too heavily
-        logits[:, 0] = -99
-        logits[:, flatformer_layers] = -99
+        # # First logit for each modality will ALWAYS be chosen, set it to -99 to avoid influencing the softmax too heavily
+        # logits[:, 0] = -99
+        # logits[:, flatformer_layers] = -99
 
         # Get the predicted noise for each of the modalities
         predicted_noise = self.noise_output(joint_embed) # b_size x 2 (img and depth)
@@ -228,17 +277,227 @@ class ConvLayerController(nn.Module):
             else:
                 discretized = get_top_k(logits, k=self.additional_layers, zero_value=0)
             discretized = torch.reshape(discretized, (B, -1))
-            discretized[:, 0] = 1 # Set the first layer to always chosen
-            discretized[:, flatformer_layers] = 1
+            # discretized[:, 0] = 1 # Set the first layer to always chosen
+            # discretized[:, flatformer_layers] = 1
             logits = torch.reshape(logits, (B, -1))
-            print('\nLiDAR Logits:', logits[0][:flatformer_layers])
-            print('Image Logits:', logits[0][flatformer_layers:])
-            print('LiDAR:', discretized[0][:flatformer_layers])
-            print('Image:',  discretized[0][flatformer_layers:])
+            if get_dist_info()[0] == 0:
+                print('\nLiDAR Logits:', logits[0][:flatformer_layers])
+                print('Image Logits:', logits[0][flatformer_layers:])
+                print('LiDAR:', discretized[0][:flatformer_layers])
+                print('Image:',  discretized[0][flatformer_layers:])
             return discretized, predicted_noise
+        elif discretization_method == 'sigmoid':
+            if self.training:
+                weights = torch.sigmoid(logits)
+            else: # If this is during inference, we don't do any gumbel softmax sampling
+                weights = get_top_k(logits, k=self.additional_layers, zero_value=0)
+            weights = torch.reshape(weights, (B, -1))
+            if get_dist_info()[0] == 0:
+                print('\nLiDAR Logits:', logits[0][:flatformer_layers])
+                print('Image Logits:', logits[0][flatformer_layers:])
+                print('LiDAR', weights[0][:flatformer_layers])
+                print('Image', weights[0][flatformer_layers:])
+            return weights, predicted_noise
+        elif discretization_method == 'neuralsort':
+            if self.training:
+                sampler = NeuralSort(tau=0.5/current_epoch, hard=False) # used to be 0.5
+                weights = sampler(logits) # B_size, N, N
+                weights = torch.sum(weights[:, :self.additional_layers], dim=1) # B_size, N
+            else:
+                weights = get_top_k(logits, k=self.additional_layers, zero_value=0)
+            # weights[:, 0] = 1 # Set the first layer to always chosen
+            # weights[:, flatformer_layers] = 1
+            # if get_dist_info()[0] == 0:
+            #     print('\nController LiDAR Logits:', logits[0][:flatformer_layers])
+            #     print('Controller Image Logits:', logits[0][flatformer_layers:])
+            #     print('Controller LiDAR', weights[0][:flatformer_layers])
+            #     print('Controller Image', weights[0][flatformer_layers:])
+            return weights, predicted_noise
         else:
             raise Exception('Invalid discretization')
         
+
+  
+# This is the Controller that allocates layers among modalities in accordance to modality quality
+@MODELS.register_module()
+class UniversalConvLayerController(nn.Module):
+    
+    # Total layer refers to the total available compute budget
+    # TODO CHANGE THIS back to 256
+    def __init__(self, embed_dim=128, num_classes=8, total_layers_img=12, total_layers_lidar=8, layer_budgets=[4, 6, 8, 10]):
+        super(UniversalConvLayerController, self).__init__()
+
+        self.voxel_extractor = nn.Sequential(
+            nn.Conv2d(128, out_channels=64, kernel_size=3, stride=3),
+            nn.BatchNorm2d(num_features=64),
+            nn.MaxPool2d(2, stride=2),
+            nn.ReLU(),
+
+            nn.Conv2d(64, out_channels=1, kernel_size=3, stride=3),
+            nn.BatchNorm2d(num_features=1),
+            nn.MaxPool2d(2, stride=2),
+            nn.ReLU(),
+        )
+        self.voxel_adapter = nn.Linear(400, embed_dim//2)
+
+        self.img_extractor = nn.Sequential(
+            nn.Conv2d(3, out_channels=64, kernel_size=3, stride=3),
+            nn.BatchNorm2d(num_features=64),
+            nn.ReLU(),
+
+            nn.Conv2d(64, out_channels=64, kernel_size=3, stride=3),
+            nn.BatchNorm2d(num_features=64),
+            nn.ReLU(),
+
+
+            nn.Conv2d(in_channels=64, out_channels=3, kernel_size=(8, 16), stride=(8, 16)),
+            nn.BatchNorm2d(num_features=3),
+            nn.ReLU()
+        )
+        self.img_adapter = nn.Linear(360, embed_dim//2)
+        self.cls = nn.Parameter(torch.randn(1, embed_dim))
+
+        self.layer_budgets = layer_budgets
+        self.layer_token_dict = nn.ParameterDict({
+                str(budget):nn.Parameter(torch.randn(1, embed_dim)) for budget in layer_budgets
+            }
+        )
+
+        self.output_head = nn.Sequential(
+            nn.Linear(embed_dim * 2, 64, bias=False),
+            nn.ReLU(),
+            nn.Linear(64, total_layers_img + total_layers_lidar, bias=False) # 12 layers in each ViT, we want to generate a one-hot at the end
+        )
+        self.noise_output = nn.Sequential(
+            nn.Linear(embed_dim*2, 64),
+            nn.ReLU(),
+            nn.Linear(64, num_classes) # We softmax over these three logits (clean, noisy lidar, noisy image)
+        )
+        self.output_head.apply(init_weights) # init output head weights to be very small, this forces it to be responsive to the noise embedding value
+        self.logits_memory = [] # Used during inference only
+        self.grad_accum = None
+
+    def manual_scatter(self, voxel_features, coors, batch_size, grid_shape, feat_channels):
+        H, W = grid_shape
+        C = feat_channels
+        canvas = torch.zeros((batch_size, C, H, W), device=voxel_features.device, dtype=voxel_features.dtype)
+        canvas[coors[:, 0], :, coors[:, 2], coors[:, 3]] = voxel_features
+        return canvas
+    
+    # Temperature define peakiness of the gumbel softmax
+    def forward(self, voxel_features, controller_coors, raw_image, flatformer_layers, temp=1, discretization_method = 'neuralsort'):
+
+        B = raw_image.shape[0]
+        current_epoch = 1
+        current_budget = self.layer_budgets[int(random.random() * len(self.layer_budgets))]
+        
+        if self.training:
+            message_hub = MessageHub.get_current_instance()
+            current_epoch = message_hub.get_info('epoch') + 1
+            
+
+        budget_token = self.layer_token_dict[str(current_budget)]
+        budget_token = budget_token.repeat(B, 1) # expand dim
+
+        bev_grid = self.manual_scatter(voxel_features, controller_coors, B, (720, 720), 128)
+    
+        voxel_noise_features = torch.reshape(self.voxel_extractor(bev_grid), (B, -1))
+        voxel_noise_features = self.voxel_adapter(voxel_noise_features)
+        
+        raw_image = rearrange(raw_image, 'b n c h w -> (b n) c h w')
+        img_noise_features = self.img_extractor(raw_image)
+        img_noise_features = torch.reshape(img_noise_features, (B, -1))
+        img_noise_features = self.img_adapter(img_noise_features)
+
+        joint_embed = torch.cat([voxel_noise_features, img_noise_features, budget_token], dim=-1)
+
+        logits = self.output_head(joint_embed) # logits are of shape B_size x 24 \
+        
+        # # First logit for each modality will ALWAYS be chosen, set it to -99 to avoid influencing the softmax too heavily
+        # logits[:, 0] = -99
+        # logits[:, flatformer_layers] = -99
+
+        # Get the predicted noise for each of the modalities
+        predicted_noise = self.noise_output(joint_embed) # b_size x 2 (img and depth)
+        if discretization_method == 'admn':
+            if self.training:
+                gumbel_samples = gumbel_softmax_sample(logits, temperature=temp, scale=0.01)
+            else: # If this is during inference, we don't do any gumbel softmax sampling
+                gumbel_samples = logits
+            discretized = get_top_k(gumbel_samples, k=self.additional_layers, zero_value=0)
+            discretized = torch.reshape(discretized, (B, -1))
+            discretized[:, 0] = 1 # Set the first layer to always chosen
+            discretized[:, flatformer_layers] = 1
+            gumbel_samples = torch.reshape(gumbel_samples, (B, -1))
+            logits = torch.reshape(logits, (B, -1))
+            if get_dist_info()[0] == 0:
+                print('\nLogits LiDAR:', logits[0][:flatformer_layers])
+                print('Logits Image:', logits[0][flatformer_layers:])
+                print('LiDAR:', discretized[0][:flatformer_layers])
+                print('Image:',  discretized[0][flatformer_layers:])
+            return gumbel_samples + (discretized - gumbel_samples).detach(), predicted_noise
+        elif discretization_method == 'straight_through': # No softmax sampling used
+            gumbel_samples = logits
+            discretized = get_top_k(gumbel_samples, k=self.additional_layers, zero_value=0)
+            discretized = torch.reshape(discretized, (B, -1, 12))
+            discretized[:, :, 0] = 1
+            gumbel_samples = torch.reshape(gumbel_samples, (B, -1, 12))
+            logits = torch.reshape(logits, (B, -1, 12))
+            # print('Image:', logits[0][0])
+            # print('Depth:', logits[0][1])
+            print('Image:', discretized[0][0])
+            print('Audio:',  discretized[0][1])
+            return gumbel_samples + (discretized - gumbel_samples).detach(), predicted_noise
+        elif discretization_method == 'progressive': # In theory this would require us to progressively adjust the temperature w gumbel softmax only
+            if self.training:
+                sampler = SubsetOperator(self.additional_layers, tau=temp, hard=False)
+                discretized = sampler(logits)
+            else:
+                discretized = get_top_k(logits, k=self.additional_layers, zero_value=0)
+            discretized = torch.reshape(discretized, (B, -1))
+            # discretized[:, 0] = 1 # Set the first layer to always chosen
+            # discretized[:, flatformer_layers] = 1
+            logits = torch.reshape(logits, (B, -1))
+            if get_dist_info()[0] == 0:
+                print('\nLiDAR Logits:', logits[0][:flatformer_layers])
+                print('Image Logits:', logits[0][flatformer_layers:])
+                print('LiDAR:', discretized[0][:flatformer_layers])
+                print('Image:',  discretized[0][flatformer_layers:])
+            return discretized, predicted_noise
+        elif discretization_method == 'sigmoid':
+            if self.training:
+                weights = torch.sigmoid(logits)
+            else: # If this is during inference, we don't do any gumbel softmax sampling
+                weights = get_top_k(logits, k=self.additional_layers, zero_value=0)
+            weights = torch.reshape(weights, (B, -1))
+            if get_dist_info()[0] == 0:
+                print('\nLiDAR Logits:', logits[0][:flatformer_layers])
+                print('Image Logits:', logits[0][flatformer_layers:])
+                print('LiDAR', weights[0][:flatformer_layers])
+                print('Image', weights[0][flatformer_layers:])
+            return weights, predicted_noise
+        elif discretization_method == 'neuralsort':
+            if self.training:
+                sampler = NeuralSort(tau=0.5/current_epoch, hard=False) # used to be 0.5
+                weights = sampler(logits) # B_size, N, N
+                weights = torch.sum(weights[:, :current_budget], dim=1) # B_size, N
+            else:
+                weights = get_top_k(logits, k=current_budget, zero_value=0)
+            # weights[:, 0] = 1 # Set the first layer to always chosen
+            # weights[:, flatformer_layers] = 1
+            if get_dist_info()[0] == 0:
+                print('\nController LiDAR Logits:', logits[0][:flatformer_layers])
+                print('Controller Image Logits:', logits[0][flatformer_layers:])
+                print('Controller LiDAR', weights[0][:flatformer_layers])
+                print('Controller Image', weights[0][flatformer_layers:])
+            return weights, predicted_noise
+        else:
+            raise Exception('Invalid discretization')
+        
+
+
+
+
 '''
 LiDAR: tensor([-99.0000,   0.5488,   0.5771,   0.5854,   0.6016,   0.6001,   0.5825,
           0.5596], device='cuda:0', dtype=torch.float16,
@@ -579,3 +838,4 @@ class AdaMML_Modality_Selector(nn.Module):
         mask[:, 1] = samp[:, 2] + samp[:, 1]
 
         return samp, mask, logits
+    

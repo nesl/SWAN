@@ -41,8 +41,10 @@ label_to_idx = {
     'beamsreducing':1,
     'dark':2,
     'snow':3,
-    'fog':4,
-    'motionblur':5
+    'camera_fog':4,
+    'lidar_fog':5,
+    'camera_motionblur':6,
+    'lidar_motionblur':7
 }
 
 def save_masked_grid(imgs, msk, output_path="masked_grid.png", alpha=0.5):
@@ -115,6 +117,8 @@ class CmtDetector(MVXTwoStageDetector):
                  test_img_retained_layers = None,
                  test_lidar_retained_layers = None,
                  controller = None,
+                 lidar_early_exit_model = None,
+                 camera_early_exit_model = None,
                  **kwargs):
         super(CmtDetector, self).__init__(**kwargs)
         self.use_grid_mask = use_grid_mask
@@ -153,6 +157,16 @@ class CmtDetector(MVXTwoStageDetector):
             self.controller = MODELS.build(controller)
         else:
             self.controller = None
+        
+        if lidar_early_exit_model:
+            self.lidar_early_exit_model = MODELS.build(lidar_early_exit_model)
+        else:
+            self.lidar_early_exit_model = None
+
+        if camera_early_exit_model:
+            self.camera_early_exit_model= MODELS.build(camera_early_exit_model)
+        else:
+            self.camera_early_exit_model = None
 
         self.timing_stats = {
             'voxel_encoder': 0.0,
@@ -172,7 +186,7 @@ class CmtDetector(MVXTwoStageDetector):
         """Initialize model weights."""
         super(CmtDetector, self).init_weights()
 
-    def extract_img_feat(self, img, img_metas, controller_selected_layers=None, drop_all_img_layers=False):
+    def extract_img_feat(self, img, img_metas, controller_selected_layers=None, drop_all_img_layers=False, losses=None):
         """Extract features of images."""
         if self.with_img_backbone and img is not None:
             input_shape = img.shape[-2:]
@@ -197,6 +211,7 @@ class CmtDetector(MVXTwoStageDetector):
                 retained_layers = (torch.rand(self.img_backbone.total_depth) > self.layerdrop_rate).int()
                 if drop_all_img_layers: # full modal layerdrop
                     retained_layers = torch.zeros_like(retained_layers)
+                    # retained_layers[0] = 1
             # Accept a tensor of specified layers to evaluate during inference
             else:
                 retained_layers = self.test_img_retained_layers
@@ -206,8 +221,8 @@ class CmtDetector(MVXTwoStageDetector):
                 retained_layers = torch.unsqueeze(retained_layers, dim=0)
 
             # If controller is training, we still compute the layer but multiply by 0 for gradient prop
-            controller_training = self.controller is not None and self.training
-            img_feats = self.img_backbone(img.float(), retained_layer_list=retained_layers, controller_training=controller_training)
+            controller_training = self.controller is not None and self.controller.training
+            img_feats = self.img_backbone(img.float(), retained_layer_list=retained_layers, controller_training=controller_training, early_exit_camera=self.camera_early_exit_model, losses=losses)
  
             if isinstance(img_feats, dict):
                 img_feats = list(img_feats.values())
@@ -221,7 +236,7 @@ class CmtDetector(MVXTwoStageDetector):
         return img_feats
 
     
-    def extract_pts_feat(self, voxel_features, coors, controller_layers=None, drop_all_lidar_layers=False):
+    def extract_pts_feat(self, voxel_features, coors, controller_layers=None, drop_all_lidar_layers=False, losses=None):
         if self.with_pts_backbone:
             # Keep operations in float32 to preseve voxelization accuracy
             with torch.autocast('cuda', enabled=False):
@@ -235,6 +250,7 @@ class CmtDetector(MVXTwoStageDetector):
                     retained_layers = (torch.rand(len(self.pts_middle_encoder.block_list) * 4) > self.layerdrop_rate).int()
                     if drop_all_lidar_layers:
                         retained_layers = torch.zeros_like(retained_layers)
+                        # retained_layers[0] = 1
                 else:
                     retained_layers = self.test_lidar_retained_layers
 
@@ -242,9 +258,9 @@ class CmtDetector(MVXTwoStageDetector):
                 if len(retained_layers.shape) == 1:
                     retained_layers = torch.unsqueeze(retained_layers, dim=0)
 
-                controller_training = self.controller is not None and self.training
+                controller_training = self.controller is not None and self.controller.training
                 # Executes FlatFormer
-                x = self.pts_middle_encoder(voxel_features, coors, batch_size, retained_layer_list=retained_layers, controller_training=controller_training)
+                x = self.pts_middle_encoder(voxel_features, coors, batch_size, retained_layer_list=retained_layers, controller_training=controller_training, early_exit_lidar=self.lidar_early_exit_model, losses=losses)
                 
                 # Pts Backbone
                 x = self.pts_backbone(x)
@@ -312,23 +328,26 @@ class CmtDetector(MVXTwoStageDetector):
             layer_allocations, predicted_categories = self.controller(voxel_features, coors, imgs, flatformer_layers)
             retained_layers_lidar = layer_allocations[:, :flatformer_layers]
             retained_layers_img = layer_allocations[:, flatformer_layers:]
+
             pts_feats = self.extract_pts_feat(
                 voxel_features,
                 coors,
                 controller_layers=retained_layers_lidar,
+                losses=losses
             )
            
             img_feats = self.extract_img_feat(
                 imgs, 
                 batch_input_metas, 
-                controller_selected_layers=retained_layers_img
+                controller_selected_layers=retained_layers_img,
+                losses=losses
             )
             # Add the cross_entropy corruption prediction loss
-            if losses is not None:
-                if get_dist_info()[0] == 0:
-                    print('Predicted Noise', predicted_categories[0])
-                    print("Gt_corruption_labels", gt_corruption_labels[0])
+            if losses is not None and self.controller.training:
                 losses['noise_pred_loss'] = nn.functional.cross_entropy(predicted_categories, gt_corruption_labels.cuda())
+            if get_dist_info()[0] == 0:
+                print("Gt_corruption_labels", gt_corruption_labels[0])
+                print('Predicted Noise', predicted_categories[0])
         else: # If we are not doing controller training
             pts_feats = self.extract_pts_feat(
                 voxel_features=voxel_features,
@@ -380,15 +399,19 @@ class CmtDetector(MVXTwoStageDetector):
     def loss(self, batch_inputs_dict, batch_data_samples, **kwargs):
         message_hub = MessageHub.get_current_instance()
         current_step = message_hub.get_info('iter')
-
+        # Set the controller to eval mode
+        if self.lidar_early_exit_model is not None or self.camera_early_exit_model is not None:
+            self.controller.eval()
         batch_input_metas = [item.metainfo for item in batch_data_samples]
         losses = dict()
         img_feats, pts_feats = self.extract_feat(batch_inputs_dict, batch_input_metas, losses)
         # First 200 steps of controller training are just to train the corruption perception
         # Set to 50 bc we are doing multigpu training
-        if self.controller is not None and current_step < 50 and not self.enable_pruning: 
+        if self.controller is not None and self.controller.training and current_step < 50 and not self.enable_pruning: 
             if get_dist_info()[0] == 0:
                 print(current_step)
+            if 'early_exit_loss' in losses:
+                del losses['early_exit_loss']
             return losses
         
         # By default, we do not enable pruning
@@ -458,6 +481,9 @@ class CmtDetector(MVXTwoStageDetector):
             - bbox_3d (:obj:`BaseInstance3DBoxes`): Prediction of bboxes,
                 contains a tensor with shape (num_instances, 7).
         """
+        # start = torch.cuda.Event(enable_timing=True)
+        # end = torch.cuda.Event(enable_timing=True)
+        # start.record()
 
         batch_input_metas = [item.metainfo for item in batch_data_samples]
 

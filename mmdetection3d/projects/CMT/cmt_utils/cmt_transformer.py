@@ -132,23 +132,28 @@ class CmtTransformer(BaseModule):
         rv_pos_embed = rearrange(rv_pos_embed, "(bs v) h w c -> (v h w) bs c", bs=bs)
         
 
-        # start = torch.cuda.Event(enable_timing=True)
-        # end = torch.cuda.Event(enable_timing=True)
-        # start.record()
+        
         # If we provide either pts_mask or img_mask, it is hard masking
         if pts_mask is not None:
             pts_mask = rearrange(pts_mask,  "bs 1 h w -> (h w) bs")
-            bev_memory = self.compact_and_pad(bev_memory, pts_mask)
-            bev_pos_embed = self.compact_and_pad(bev_pos_embed, pts_mask)
+            if self.training:
+                bev_memory = self.compact_and_pad(bev_memory, pts_mask)
+                bev_pos_embed = self.compact_and_pad(bev_pos_embed, pts_mask)
+            else:
+                assert bs == 1
+                bev_memory = torch.unsqueeze(bev_memory[pts_mask.bool()], dim=1)
+                bev_pos_embed = torch.unsqueeze(bev_pos_embed[pts_mask.bool()], dim=1)
         if img_mask is not None:
             img_mask = rearrange(img_mask, "(bs v) 1 h w -> (v h w) bs", bs=bs)
-            rv_memory = self.compact_and_pad(rv_memory, img_mask)
-            rv_pos_embed = self.compact_and_pad(rv_pos_embed, img_mask)
-        
-        # end.record()
-        # torch.cuda.synchronize()
-        # with open('compact_and_pad.txt', 'a') as handle:
-        #     print('Elapsed:', start.elapsed_time(end), file=handle)
+            if self.training:
+                rv_memory = self.compact_and_pad(rv_memory, img_mask)
+                rv_pos_embed = self.compact_and_pad(rv_pos_embed, img_mask)
+            else:
+                assert bs == 1
+                rv_memory = torch.unsqueeze(rv_memory[img_mask.bool()], dim=1)
+                rv_pos_embed = torch.unsqueeze(rv_pos_embed[img_mask.bool()], dim=1)
+
+
             
         memory, pos_embed = torch.cat([bev_memory, rv_memory], dim=0), torch.cat([bev_pos_embed, rv_pos_embed], dim=0)
         query_embed = query_embed.transpose(0, 1)  # [num_query, dim] -> [num_query, bs, dim]
@@ -162,6 +167,10 @@ class CmtTransformer(BaseModule):
                                   query_pos=pos_embed, key_pos=pos_embed)
             if len(memory.shape) == 4: # Somehow it adds an extra dimension at dim 0 during the self attention process
                 memory = memory[0]
+
+        # start = torch.cuda.Event(enable_timing=True)
+        # end = torch.cuda.Event(enable_timing=True)
+        # start.record()
         out_dec = self.decoder(
             query=target,
             key=memory,
@@ -172,6 +181,10 @@ class CmtTransformer(BaseModule):
             attn_masks=[attn_masks, None],
             reg_branch=reg_branch,
             )
+        # end.record()
+        # torch.cuda.synchronize()
+        # with open('detr_attention.txt', 'a') as handle:
+        #     print('Elapsed:', start.elapsed_time(end), file=handle)
         out_dec = out_dec.transpose(1, 2)
         return out_dec, memory
 

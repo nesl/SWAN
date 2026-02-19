@@ -13,6 +13,7 @@ from .positional_encoding import (LearnedPositionalEncoding3D,
 from .transforms_3d import GlobalRotScaleTransImage, ResizeCropFlipImage
 from .utils import denormalize_bbox, normalize_bbox
 from .vovnetcp import VoVNetCP
+from .nuscenes_corrupt import *
 
 __all__ = [
     'GlobalRotScaleTransImage', 'ResizeCropFlipImage', 'VoVNetCP', 'PETRHead',

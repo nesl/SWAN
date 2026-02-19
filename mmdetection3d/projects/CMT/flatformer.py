@@ -8,6 +8,8 @@ import torch.nn as nn
 from flash_attn import flash_attn_varlen_qkvpacked_func
 from torch.nn import functional as F
 from mmdet3d.registry import MODELS
+from mmengine.dist import get_dist_info
+from mmengine.logging import MessageHub
 
 __all__ = ["FlatFormer"]
 
@@ -172,6 +174,37 @@ class BasicLayer(nn.Module):
 
         return src
 
+def _gumbel_sigmoid(
+    logits, tau=1, hard=False, eps=1e-10, training = True, threshold = 0.5
+):
+    if training :
+        # ~Gumbel(0,1)`
+        gumbels1 = (
+            -torch.empty_like(logits, memory_format=torch.legacy_contiguous_format)
+            .exponential_()
+            .log()
+        )
+        gumbels2 = (
+            -torch.empty_like(logits, memory_format=torch.legacy_contiguous_format)
+            .exponential_()
+            .log()
+        )
+        # Difference of two` gumbels because we apply a sigmoid
+        gumbels1 = (logits + gumbels1 - gumbels2) / tau
+        y_soft = gumbels1.sigmoid()
+    else :
+        y_soft = logits.sigmoid()
+
+    if hard:
+        # Straight through.
+        y_hard = torch.zeros_like(
+            logits, memory_format=torch.legacy_contiguous_format
+        ).masked_fill(y_soft > threshold, 1.0)
+        ret = y_hard - y_soft.detach() + y_soft
+    else:
+        ret = y_soft
+    return ret
+
 # Each basicblock contains 4 basic layers for x, x_shift, y, and y_shift
 # Add base layer dropping logic here
 class BasicBlock(nn.Module):
@@ -193,26 +226,69 @@ class BasicBlock(nn.Module):
             )
             self.block.append(layer)
     # TODO: We may have to update this structure slightly when moving towards TensorRT and edge devices 
-    def forward(self, x: torch.Tensor, pe: torch.Tensor, mappings: Dict[str, Any], retained_layer_list=None, controller_training=False) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, pe: torch.Tensor, mappings: Dict[str, Any], retained_layer_list=None, controller_training=False, early_exit_lidar=None, losses=None, block_layer_start=0, remaining_layer_count=None) -> torch.Tensor:
         # Run through the four basic layers while performing shift and sort operations
+        decision_list = []
+        logits_list = []
+        early_exit_training = early_exit_lidar is not None and early_exit_lidar.training
         for k, name in enumerate(["x", "x_shift", "y", "y_shift"]):
+
+            indices = mappings[name]
+            # If we are training early exit, or if we are testing with early_exit_enabled and controller specifically activates this layer (bsize 1)
+            if early_exit_training or (early_exit_lidar is not None and not self.training and retained_layer_list[0][k]):
+                lidar_feature = x[indices]
+                lengths = [mappings['batch_start_indices'][i+1] - mappings['batch_start_indices'][i] for i in range(len(mappings['batch_start_indices']) - 1)]
+                voxel_batches = torch.split(lidar_feature, lengths)
+
+                raw_logits = early_exit_lidar(voxel_batches, block_layer_start + k, torch.tensor(remaining_layer_count).to(x.device))
+                # Subtract the mask to tell the EE module how many controller layers it has left
+                # We have to keep as list or else pytorch freaks out about grad computation
+                for list_idx in range(len(remaining_layer_count)):
+                    remaining_layer_count[list_idx] -= torch.round(retained_layer_list[:, k])[list_idx].item()
+                logits_list.append(raw_logits[0][0].item())
+
+                current_epoch = 1
+                if early_exit_lidar.training:
+                    message_hub = MessageHub.get_current_instance()
+                    current_epoch = message_hub.get_info('epoch') + 1
+                decision = torch.squeeze(_gumbel_sigmoid(raw_logits, training=early_exit_lidar.training, tau=max(0.25/current_epoch, 0.05), hard=not early_exit_lidar.training)) # b_size x 1
+                # Ignore this layer during inference
+                if not early_exit_lidar.training:
+                    decision_list.append(decision.item())
+                    if decision.item() == 0:
+                        continue    
+                else:
+                    if decision.ndim != 0:
+                        decision_list.append(decision[0].item())
+
             # If retained_layer_list does not exist OR is 1 OR controller training is active, run that particular layer
             # During normal layerdrop training and all inference retained_layer_list has tensor shape [1, 8]
-            if controller_training or retained_layer_list is None or retained_layer_list[0][k]:
-                indices = mappings[name]
+            if controller_training or early_exit_training or retained_layer_list is None or retained_layer_list[0][k]:
+
                 x_new = self.block[k](x[indices][mappings["flat2win"]], pe[indices][mappings["flat2win"]])[
                     mappings["win2flat"]
                 ]
 
                 # If we are doing controller training, then retained_layer_list is going to be B x 12 as it is lidar
-                if controller_training:
+                if controller_training or early_exit_training:
                     across_batch_mask = retained_layer_list[:, k]
+                    if early_exit_lidar is not None:
+                        # I am 80% sure that when the controller picks a 0, it will kill the grads
+                        # This means it will naturally get minimized by the hinge loss
+                        # This means the EE should ignore the ones that the controller doesnt pick
+                        across_batch_mask = across_batch_mask * decision
+                        if 'early_exit_loss' not in losses:
+                            losses['early_exit_loss'] = torch.mean(torch.relu(raw_logits + 2)) / 30
+                        else:
+                            losses['early_exit_loss'] += torch.mean(torch.relu(raw_logits + 2)) / 30
                     repeats = mappings['batch_start_indices'][1:] - mappings['batch_start_indices'][:-1]
                     expanded_mask = torch.unsqueeze(torch.repeat_interleave(across_batch_mask, repeats), dim=-1) # Match dims with x[indices]
                     x[indices] = x[indices] * (1 - expanded_mask) + x_new * expanded_mask
                 else:
                     x[indices] = x_new
-
+        if get_dist_info()[0] == 0 and early_exit_lidar is not None:
+            print("Lidar Logits List", logits_list)
+            print("Lidar Decision List", decision_list)
         return x
 
 
@@ -289,8 +365,6 @@ class FlattenedWindowMapping(nn.Module):
         # flat2win = torch.arange(batch_start_indices_p[-1]).to(coords.device)
         # win2flat = torch.arange(batch_start_indices[-1]).to(coords.device)
 
-
-        
         for i in range(batch_size):
             win2flat[batch_start_indices[i] : batch_start_indices[i + 1]] += (
                 batch_start_indices_p[i] - batch_start_indices[i]
@@ -419,18 +493,29 @@ class FlatFormer(nn.Module):
         self.output_shape = output_shape
 
     # Added LayerDropping Logic
-    def forward(self, x, coords, batch_size, retained_layer_list=None, controller_training=False):
+    def forward(self, x, coords, batch_size, retained_layer_list=None, controller_training=False, early_exit_lidar=None, losses=None):
 
         pe = self.embedding(coords, x.dtype)
         mappings = self.mapping(coords, batch_size)
+        # This is to pass to the early-exit to make it aware of how many layers it has left to execute
+        remaining_layer_count=[8] * batch_size
+        
+        if early_exit_lidar is not None:
+            remaining_layer_count = torch.round(torch.sum(retained_layer_list, dim=-1)).int().detach().tolist()
+
         for i, block in enumerate(self.block_list):
             # Chunk the list four at a time for each block
             stage_layer_list = None
             if retained_layer_list is not None:
                 stage_layer_list = retained_layer_list[:, i*4:(i+1) * 4]
-
-            x = block(x, pe, mappings, stage_layer_list, controller_training)
+            x = block(x, pe, mappings, stage_layer_list, controller_training, early_exit_lidar, losses=losses, block_layer_start=i * 4, remaining_layer_count = remaining_layer_count)
+        # start = torch.cuda.Event(enable_timing=True)
+        # end = torch.cuda.Event(enable_timing=True)
+        # start.record()
         x = self.recover_bev(x, coords, batch_size)
+        # end.record()
+        # torch.cuda.synchronize()
+        # print("BEV Proj", start.elapsed_time(end))
 
         return x
 

@@ -1,55 +1,87 @@
 import torch
 
-def convert_sparse_encoder_weights(src_ckpt, dst_ckpt):
-    print(f"Loading checkpoint from {src_ckpt}...")
-    checkpoint = torch.load(src_ckpt, map_location='cpu')
-    
-    # Handle if weights are wrapped in 'state_dict' key or are the root dict
-    if 'state_dict' in checkpoint:
-        state_dict = checkpoint['state_dict']
-    else:
-        state_dict = checkpoint
+def compare_state_dicts(dict1, dict2, epsilon=1e-8):
+    """
+    Compares two PyTorch state dicts and returns keys where weights differ.
+    """
+    # Find common keys to avoid KeyErrors
+    common_keys = set(dict1.keys()) & set(dict2.keys())
+    differences = {}
 
-    print("Converting weights...")
-    converted_count = 0
-    
-    for key, value in state_dict.items():
-        # Filter for Sparse Encoder weights
-        if 'pts_middle_encoder' in key and 'weight' in key:
+    for key in common_keys:
+        val1 = dict1[key]
+        val2 = dict2[key]
+        if not torch.is_floating_point(val1):
+            val1 = val1.float()
+        if not torch.is_floating_point(val2):
+            val2 = val2.float()
+        # Check if the weights are close within tolerance epsilon
+        if not torch.allclose(val1, val2, atol=epsilon):
+            # Calculate the absolute difference for context
+            diff_norm = torch.norm(val1 - val2).item()
+            differences[key] = diff_norm
             
-            # We only want to permute the Convolution weights (which are 5D).
-            # We must NOT touch BatchNorm weights (which are 1D).
-            if value.dim() == 5:
-                # Original Shape: [Out, Kd, Kh, Kw, In] -> [16, 3, 3, 3, 5]
-                # Target Shape:   [Kd, Kh, Kw, In, Out] -> [3, 3, 3, 5, 16]
-                # Permutation:    (1, 2, 3, 4, 0)
-                
-                original_shape = value.shape
-                new_value = value.permute(1, 2, 3, 4, 0)
-                
-                # Update the dictionary in place
-                state_dict[key] = new_value
-                
-                print(f"Permuted {key}: {original_shape} -> {new_value.shape}")
-                converted_count += 1
+    return differences
 
-    print(f"Finished! Converted {converted_count} layers.")
-    
-    # Save back to the structure
-    if 'state_dict' in checkpoint:
-        checkpoint['state_dict'] = state_dict
-    else:
-        checkpoint = state_dict
-        
-    torch.save(checkpoint, dst_ckpt)
-    print(f"Saved converted checkpoint to {dst_ckpt}")
+# --- Example Usage ---
 
-# --- USAGE ---
-if __name__ == "__main__":
-    # Path to your original CMT weights
-    original_weights = '/workspace/mmdetection3d/paper_checkpoints/voxel0100_r50_800x320_epoch20.pth' # Or whatever your file is
+# 1. Setup dummy state dicts
+model_a = torch.load('/workspace/mmdetection3d/work_dirs/cmt_train_all_corruptions/epoch_8.pth')['state_dict']
+model_b = torch.load('/workspace/mmdetection3d/work_dirs/ADMN_20_early_exit/epoch_3.pth')['state_dict']
+
+
+# 2. Run comparison
+epsilon_val = 1e-5
+diffs = compare_state_dicts(model_a, model_b, epsilon=epsilon_val)
+
+# 3. Report findings
+if not diffs:
+    print(f"✅ All common weights are identical within epsilon {epsilon_val}")
+else:
+    print(f"❌ Found {len(diffs)} differing layers:")
+    for key, norm in diffs.items():
+        print(f" - {key}: Frobenius norm of diff = {norm:.6f}")
+
+# class NeuralSort (torch.nn.Module):
+#     def __init__(self, tau=1.0, hard=False):
+#         super(NeuralSort, self).__init__()
+#         self.hard = hard
+#         self.tau = tau
+
+#     def forward(self, scores):
+#         """
+#         scores: elements to be sorted. Typical shape: batch_size x n x 1
+#         """
+#         scores = scores.unsqueeze(-1)
+#         bsize = scores.size()[0]
+#         dim = scores.size()[1]
+#         one = torch.cuda.FloatTensor(dim, 1).fill_(1)
+
+#         A_scores = torch.abs(scores - scores.permute(0, 2, 1))
+#         B = torch.matmul(A_scores, torch.matmul(
+#             one, torch.transpose(one, 0, 1)))
+#         scaling = (dim + 1 - 2 * (torch.arange(dim) + 1)
+#                    ).type(torch.cuda.FloatTensor)
+#         C = torch.matmul(scores, scaling.unsqueeze(0))
+
+#         P_max = (C-B).permute(0, 2, 1)
+#         sm = torch.nn.Softmax(-1)
+#         P_hat = sm(P_max / self.tau)
+
+#         if self.hard:
+#             P = torch.zeros_like(P_hat, device='cuda')
+#             b_idx = torch.arange(bsize).repeat([1, dim]).view(dim, bsize).transpose(
+#                 dim0=1, dim1=0).flatten().type(torch.cuda.LongTensor)
+#             r_idx = torch.arange(dim).repeat(
+#                 [bsize, 1]).flatten().type(torch.cuda.LongTensor)
+#             c_idx = torch.argmax(P_hat, dim=-1).flatten()  # this is on cuda
+#             brc_idx = torch.stack((b_idx, r_idx, c_idx))
+
+#             P[brc_idx[0], brc_idx[1], brc_idx[2]] = 1
+#             P_hat = (P-P_hat).detach() + P_hat
+#         return P_hat
     
-    # Path where you want the new weights
-    new_weights = 'paper_checkpoints/CONVERTED_voxel0100_r50_800x320_epoch20.pth'
-    
-    convert_sparse_encoder_weights(original_weights, new_weights)
+# test = NeuralSort()
+# rand = torch.randn(1,5).cuda()
+# res =test(rand)
+# import pdb; pdb.set_trace()

@@ -308,6 +308,44 @@ class PETRMultiheadFlashAttention(BaseModule):
 
 
 @MODELS.register_module()
+class EarlyExitTransformerDecoder(TransformerLayerSequence):
+    def __init__(self,
+                 *args,
+                 post_norm_cfg=dict(type='LN'),
+                 return_intermediate=False,
+                 **kwargs):
+        super(EarlyExitTransformerDecoder, self).__init__(*args, **kwargs)
+        self.return_intermediate = return_intermediate
+        if post_norm_cfg is not None:
+            self.post_norm = build_norm_layer(post_norm_cfg,
+                                              self.embed_dims)[1]
+        else:
+            self.post_norm = None
+        
+        self.cls = nn.Parameter(torch.randn(12, self.embed_dims))
+        self.output_head = nn.Sequential(
+            nn.Linear(self.embed_dims, 64),
+            nn.ReLU(),
+            nn.Linear(64, 1)
+        )
+
+    def forward(self, key, current_layer=0, *args, **kwargs):
+        # query input shape must be `(num_query, bs, embed_dims)`
+        cls_token = self.cls[current_layer]
+        query = torch.reshape(cls_token, (1, 1, self.embed_dims))
+        query = query.repeat(1, key.shape[1], 1)
+        # query shape should be (1, b_size, dim) with key, val as (N, b_size, dim)
+        x = super().forward(query, key=key, *args, **kwargs)
+        if self.post_norm:
+            x = self.post_norm(x)[None]
+        logit_out = self.output_head(x[0])
+        return logit_out + 0.2 # bias slightly positive at the start
+        
+
+
+
+
+@MODELS.register_module()
 class PETRTransformerDecoder(TransformerLayerSequence):
     """Implements the decoder in DETR transformer.
     Args:

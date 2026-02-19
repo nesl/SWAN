@@ -692,50 +692,113 @@ class FreezeSpecificModuleHook(Hook):
             trainable = [n for n, p in model.named_parameters() if p.requires_grad]
             print_log(f"--> Total trainable parameter groups: {len(trainable)}", logger='current')
 
+# @HOOKS.register_module()
+# class FreezeLayersHook(Hook):
+#     def __init__(self, train_module_names):
+#         self.train_module_names = [train_module_names] if isinstance(train_module_names, str) else train_module_names
+
+#     def before_run(self, runner):
+#         # Use get_model to handle DDP wrappers automatically
+#         from mmengine.model import is_model_wrapper
+#         model = runner.model
+#         if is_model_wrapper(model):
+#             model = model.module
+            
+#         # 1. Freeze EVERYTHING 
+#         for param in model.parameters():
+#             param.requires_grad = False
+        
+#         # 2. Unfreeze specific modules
+#         # We loop through the list of names you provided
+#         for target_name in self.train_module_names:
+#             found = False
+            
+#             # We look for the module by name within the model
+#             for name, module in model.named_modules():
+#                 if name == target_name:
+#                     found = True
+#                     # Turn gradients back on
+#                     for param in module.parameters():
+#                         param.requires_grad = True
+                    
+#                     # Force train mode (for BatchNorm/Dropout behavior)
+#                     module.train()
+#                     print(f"✅ Unfrozen module: {name}")
+                    
+#             if not found:
+#                 print(f"⚠️ WARNING: Module '{target_name}' not found in model!")
+
+#         # 3. Double check verification
+#         trainable_count = 0
+#         for name, param in model.named_parameters():
+#             if param.requires_grad:
+#                 trainable_count += 1
+#                 # print(f"Trainable: {name}") # Uncomment to see every single weight
+        
+#         print(f"--> Total trainable parameter groups: {trainable_count}")
+
+
+from mmengine.hooks import Hook
+from mmengine.registry import HOOKS
+from mmengine.model import is_model_wrapper
+import torch.nn as nn
+
 @HOOKS.register_module()
 class FreezeLayersHook(Hook):
     def __init__(self, train_module_names):
         self.train_module_names = [train_module_names] if isinstance(train_module_names, str) else train_module_names
 
-    def before_run(self, runner):
-        # Use get_model to handle DDP wrappers automatically
-        from mmengine.model import is_model_wrapper
-        model = runner.model
-        if is_model_wrapper(model):
-            model = model.module
-            
-        # 1. Freeze EVERYTHING 
-        for param in model.parameters():
-            param.requires_grad = False
+    def _apply_freeze_logic(self, runner):
+        model = runner.model.module if is_model_wrapper(runner.model) else runner.model
         
-        # 2. Unfreeze specific modules
-        # We loop through the list of names you provided
-        for target_name in self.train_module_names:
-            found = False
+        for name, module in model.named_modules():
+            is_unfrozen = any(name == m or name.startswith(f"{m}.") for m in self.train_module_names)
             
-            # We look for the module by name within the model
-            for name, module in model.named_modules():
-                if name == target_name:
-                    found = True
-                    # Turn gradients back on
-                    for param in module.parameters():
-                        param.requires_grad = True
-                    
-                    # Force train mode (for BatchNorm/Dropout behavior)
-                    module.train()
-                    print(f"✅ Unfrozen module: {name}")
-                    
-            if not found:
-                print(f"⚠️ WARNING: Module '{target_name}' not found in model!")
+            if is_unfrozen:
+                module.train()
+                for param in module.parameters():
+                    param.requires_grad = True
+                # print(f"✅ Unfrozen module: {name}")
 
-        # 3. Double check verification
-        trainable_count = 0
-        for name, param in model.named_parameters():
-            if param.requires_grad:
-                trainable_count += 1
-                # print(f"Trainable: {name}") # Uncomment to see every single weight
+            else:
+                # --- THE SURGICAL FIX ---
+                # 1. Keep the module in .train() so self.training is TRUE
+                # This ensures prepare_for_dn() still runs its logic.
+                module.train() 
+                
+                # 2. Kill the gradients
+                for param in module.parameters():
+                    param.requires_grad = False
+                
+                # 3. IF it's a BatchNorm layer, force it to behave like EVAL
+                if isinstance(module, (nn.modules.batchnorm._BatchNorm, nn.LayerNorm)):
+                    module.eval() # This stops running_mean updates
+                    # Ensure it stays locked even if parent calls .train()
+                    module.track_running_stats = False
+
+    def before_run(self, runner):
+        """Initial setup and parameter count logging."""
+        self._apply_freeze_logic(runner)
         
-        print(f"--> Total trainable parameter groups: {trainable_count}")
+        # Count params for verification
+        model = runner.model.module if is_model_wrapper(runner.model) else runner.model
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        runner.logger.info(f"❄️ FreezeLayersHook: {trainable:,} trainable parameters.")
+
+    def before_train_epoch(self, runner):
+        """
+        CRITICAL: Re-apply freeze logic every epoch. 
+        MMEngine calls model.train() at the start of each epoch, 
+        which would otherwise unfreeze your BatchNorm stats.
+        """
+        self._apply_freeze_logic(runner)
+
+    def before_train_iter(self, runner, batch_idx, data_batch=None):
+        """
+        Force the mode back to eval immediately before the forward pass.
+        This catches any internal .train() calls that happen after the epoch starts.
+        """
+        self._apply_freeze_logic(runner)
 
 
 from mmengine.model import is_model_wrapper

@@ -266,26 +266,26 @@ test_pipeline = [
         ])
 ]
 
-train_dataloader = dict(
-    batch_size=4,
-    num_workers=4,
-    persistent_workers=True,
-    sampler=dict(type='DefaultSampler', shuffle=True),
-    dataset=dict(
-        type='CBGSDataset',
-        dataset=dict(
-            type=dataset_type,
-            data_root=data_root,
-            ann_file='nuscenes_infos_train.pkl',
-            pipeline=train_pipeline,
-            metainfo=metainfo,
-            modality=input_modality,
-            test_mode=False,
-            data_prefix=data_prefix,
-            use_valid_flag=True,
-            # we use box_type_3d='LiDAR' in kitti and nuscenes dataset
-            # and box_type_3d='Depth' in sunrgbd and scannet dataset.
-            box_type_3d='LiDAR')))
+# train_dataloader = dict(
+#     batch_size=4,
+#     num_workers=4,
+#     persistent_workers=True,
+#     sampler=dict(type='DefaultSampler', shuffle=True),
+#     dataset=dict(
+#         type='CBGSDataset',
+#         dataset=dict(
+#             type=dataset_type,
+#             data_root=data_root,
+#             ann_file='nuscenes_infos_train.pkl',
+#             pipeline=train_pipeline,
+#             metainfo=metainfo,
+#             modality=input_modality,
+#             test_mode=False,
+#             data_prefix=data_prefix,
+#             use_valid_flag=True,
+#             # we use box_type_3d='LiDAR' in kitti and nuscenes dataset
+#             # and box_type_3d='Depth' in sunrgbd and scannet dataset.
+#             box_type_3d='LiDAR')))
 val_dataloader = dict(
     batch_size=1,
     num_workers=4,

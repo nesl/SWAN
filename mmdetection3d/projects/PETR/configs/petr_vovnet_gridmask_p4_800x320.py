@@ -6,7 +6,7 @@ _base_ = [
 backbone_norm_cfg = dict(type='LN', requires_grad=True)
 custom_imports = dict(imports=['projects.PETR.petr'])
 
-randomness = dict(seed=1, deterministic=False, diff_rank_seed=False)
+randomness = dict(seed=1, deterministic=False, diff_rank_seed=True)
 # If point cloud range is changed, the models should also change their point
 # cloud range accordingly
 point_cloud_range = [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0]
