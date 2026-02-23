@@ -1,16 +1,12 @@
 
 
-base=['./EE_Universal_Controller.py']
+_base_=['./EE_Universal_Controller.py']
+
 model = dict(
-    type='CmtDetector',
     enable_pruning=True,
     use_hard_pruning=False,
 )
 
-# runtime settings
-train_cfg = dict(by_epoch=True, max_epochs=16, val_interval=17)
-val_cfg = dict()
-test_cfg = dict()
 
 param_scheduler = [
     dict(
@@ -26,15 +22,19 @@ param_scheduler = [
 
 train_dataloader = dict(
     batch_size=8,
-    num_workers=12,
-    persistent_workers=True
+    num_workers=12
 )
 
 optim_wrapper = dict(
-    type='AmpOptimWrapper',
-    optimizer=dict(type='AdamW', lr=1e-3, weight_decay=0.01),
-    clip_grad=dict(max_norm=35, norm_type=2),
+    optimizer=dict(
+        type='AdamW', 
+        lr=1e-3, 
+        weight_decay=0.01
+    )
 )
+
+
+
 
 custom_hooks = [
     dict(type='FreezeLayersHook', train_module_names=['lidar_pruner', 'img_pruner'])
@@ -55,4 +55,4 @@ randomness = dict(
 )
 
 resume=False
-load_from='/workspace/mmdetection3d/work_dirs/ECCV_EE_Controller_universal_model/epoch_16.pth'
+load_from='/workspace/mmdetection3d/work_dirs/EE_Universal_Controller/epoch_16.pth'

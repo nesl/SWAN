@@ -10,17 +10,17 @@
 #     --work-dir ./work_dirs/cmt_train_all_corruptions
 
 # Universal controller
-# bash tools/dist_train.sh /workspace/mmdetection3d/projects/CMT/configs/ECCV_Configs/Universal_Controller_cmt_voxel_015_flatformer_swin_multicorrupt.py 4 \
+# CUDA_VISIBLE_DEVICES=1,2,3 bash tools/dist_train.sh /workspace/mmdetection3d/projects/CMT/configs/ECCV_Configs/Universal_Controller_cmt_voxel_015_flatformer_swin_multicorrupt.py 3 \
 #         --work-dir "./work_dirs/ECCV_Controller_universal_model" \
 #         > "./work_dirs/ECCV_universal_controller_train.txt"
 
-bash tools/dist_train.sh /workspace/mmdetection3d/projects/CMT/configs/ECCV_Configs/EE_Universal_Controller.py 4 \
-        > "./work_dirs/EE_Universal_Controller_train.txt"
+# CUDA_VISIBLE_DEVICES=1,2,3 bash tools/dist_train.sh /workspace/mmdetection3d/projects/CMT/configs/ECCV_Configs/EE_Universal_Controller.py 3 \
+#         > "./work_dirs/EE_Universal_Controller_train.txt"
 
-bash tools/dist_train.sh /workspace/mmdetection3d/projects/CMT/configs/ECCV_Configs/Soft_Pruning_EE_Universal_Controller.py 4 \
-        > "./work_dirs/Soft_Pruning_EE_Universal_Controller.txt"
+# CUDA_VISIBLE_DEVICES=1,2,3 bash tools/dist_train.sh /workspace/mmdetection3d/projects/CMT/configs/ECCV_Configs/Soft_Pruning_EE_Universal_Controller.py 3 \
+#         > "./work_dirs/Soft_Pruning_EE_Universal_Controller.txt"
 
-bash tools/dist_train.sh /workspace/mmdetection3d/projects/CMT/configs/ECCV_Configs/Hard_Pruning_EE_Universal_Controller.py 4 \
+CUDA_VISIBLE_DEVICES=1,2,3 bash tools/dist_train.sh /workspace/mmdetection3d/projects/CMT/configs/ECCV_Configs/Hard_Pruning_EE_Universal_Controller.py 3 \
         > "./work_dirs/Hard_Pruning_EE_Universal_Controller.txt"
 
 

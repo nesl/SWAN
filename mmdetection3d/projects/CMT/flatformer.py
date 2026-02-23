@@ -226,7 +226,10 @@ class BasicBlock(nn.Module):
             )
             self.block.append(layer)
     # TODO: We may have to update this structure slightly when moving towards TensorRT and edge devices 
-    def forward(self, x: torch.Tensor, pe: torch.Tensor, mappings: Dict[str, Any], retained_layer_list=None, controller_training=False, early_exit_lidar=None, losses=None, block_layer_start=0, remaining_layer_count=None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, pe: torch.Tensor, mappings: Dict[str, Any], 
+                retained_layer_list=None, controller_training=False, early_exit_lidar=None,
+                  losses=None, block_layer_start=0, remaining_layer_count=None,
+                  predicted_noise=None, camera_alloc=None) -> torch.Tensor:
         # Run through the four basic layers while performing shift and sort operations
         decision_list = []
         logits_list = []
@@ -239,8 +242,16 @@ class BasicBlock(nn.Module):
                 lidar_feature = x[indices]
                 lengths = [mappings['batch_start_indices'][i+1] - mappings['batch_start_indices'][i] for i in range(len(mappings['batch_start_indices']) - 1)]
                 voxel_batches = torch.split(lidar_feature, lengths)
-
-                raw_logits = early_exit_lidar(voxel_batches, block_layer_start + k, torch.tensor(remaining_layer_count).to(x.device))
+                start = torch.cuda.Event(enable_timing=True)
+                end = torch.cuda.Event(enable_timing=True)
+                start.record()
+                raw_logits = early_exit_lidar(voxel_batches, block_layer_start + k, 
+                                              torch.tensor(remaining_layer_count).to(x.device), 
+                                              retained_layer_list[:, k], predicted_noise=predicted_noise,
+                                              camera_alloc=camera_alloc)
+                end.record()
+                torch.cuda.synchronize()
+                print(start.elapsed_time(end))
                 # Subtract the mask to tell the EE module how many controller layers it has left
                 # We have to keep as list or else pytorch freaks out about grad computation
                 for list_idx in range(len(remaining_layer_count)):
@@ -286,9 +297,9 @@ class BasicBlock(nn.Module):
                     x[indices] = x[indices] * (1 - expanded_mask) + x_new * expanded_mask
                 else:
                     x[indices] = x_new
-        if get_dist_info()[0] == 0 and early_exit_lidar is not None:
-            print("Lidar Logits List", logits_list)
-            print("Lidar Decision List", decision_list)
+        # if get_dist_info()[0] == 0 and early_exit_lidar is not None:
+        #     print("Lidar Logits List", logits_list)
+        #     print("Lidar Decision List", decision_list)
         return x
 
 
@@ -493,7 +504,7 @@ class FlatFormer(nn.Module):
         self.output_shape = output_shape
 
     # Added LayerDropping Logic
-    def forward(self, x, coords, batch_size, retained_layer_list=None, controller_training=False, early_exit_lidar=None, losses=None):
+    def forward(self, x, coords, batch_size, retained_layer_list=None, controller_training=False, early_exit_lidar=None, losses=None, predicted_noise=None, camera_alloc=None):
 
         pe = self.embedding(coords, x.dtype)
         mappings = self.mapping(coords, batch_size)
@@ -508,7 +519,9 @@ class FlatFormer(nn.Module):
             stage_layer_list = None
             if retained_layer_list is not None:
                 stage_layer_list = retained_layer_list[:, i*4:(i+1) * 4]
-            x = block(x, pe, mappings, stage_layer_list, controller_training, early_exit_lidar, losses=losses, block_layer_start=i * 4, remaining_layer_count = remaining_layer_count)
+            x = block(x, pe, mappings, stage_layer_list, controller_training, early_exit_lidar, 
+                      losses=losses, block_layer_start=i * 4, remaining_layer_count = remaining_layer_count,
+                      predicted_noise=predicted_noise, camera_alloc=camera_alloc)
         # start = torch.cuda.Event(enable_timing=True)
         # end = torch.cuda.Event(enable_timing=True)
         # start.record()

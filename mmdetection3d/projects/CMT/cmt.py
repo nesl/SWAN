@@ -31,6 +31,8 @@ import sys
 from mmengine.logging import MessageHub
 from mmengine.dist import get_dist_info
 import torchvision
+import torch._inductor.config as config
+
 
 # Define timing events
 start_event = torch.cuda.Event(enable_timing=True)
@@ -121,6 +123,7 @@ class CmtDetector(MVXTwoStageDetector):
                  camera_early_exit_model = None,
                  **kwargs):
         super(CmtDetector, self).__init__(**kwargs)
+
         self.use_grid_mask = use_grid_mask
         self.grid_mask = GridMask(True, True, rotate=1, offset=False, ratio=0.5, mode=1, prob=0.7)
         # Modal mask and layerdrop are enabled together during training
@@ -159,14 +162,14 @@ class CmtDetector(MVXTwoStageDetector):
             self.controller = None
         
         if lidar_early_exit_model:
-            self.lidar_early_exit_model = MODELS.build(lidar_early_exit_model)
+            self.early_exit_lidar = MODELS.build(lidar_early_exit_model)
         else:
-            self.lidar_early_exit_model = None
+            self.early_exit_lidar = None
 
         if camera_early_exit_model:
-            self.camera_early_exit_model= MODELS.build(camera_early_exit_model)
+            self.early_exit_camera= MODELS.build(camera_early_exit_model)
         else:
-            self.camera_early_exit_model = None
+            self.early_exit_camera = None
 
         self.timing_stats = {
             'voxel_encoder': 0.0,
@@ -186,7 +189,7 @@ class CmtDetector(MVXTwoStageDetector):
         """Initialize model weights."""
         super(CmtDetector, self).init_weights()
 
-    def extract_img_feat(self, img, img_metas, controller_selected_layers=None, drop_all_img_layers=False, losses=None):
+    def extract_img_feat(self, img, img_metas, controller_selected_layers=None, drop_all_img_layers=False, losses=None, predicted_noise=None, lidar_alloc=None):
         """Extract features of images."""
         if self.with_img_backbone and img is not None:
             input_shape = img.shape[-2:]
@@ -222,7 +225,9 @@ class CmtDetector(MVXTwoStageDetector):
 
             # If controller is training, we still compute the layer but multiply by 0 for gradient prop
             controller_training = self.controller is not None and self.controller.training
-            img_feats = self.img_backbone(img.float(), retained_layer_list=retained_layers, controller_training=controller_training, early_exit_camera=self.camera_early_exit_model, losses=losses)
+            img_feats = self.img_backbone(img.float(), retained_layer_list=retained_layers, controller_training=controller_training, early_exit_camera=self.early_exit_camera, losses=losses,
+                                          predicted_noise=predicted_noise, 
+                                            lidar_alloc=lidar_alloc)
  
             if isinstance(img_feats, dict):
                 img_feats = list(img_feats.values())
@@ -236,7 +241,7 @@ class CmtDetector(MVXTwoStageDetector):
         return img_feats
 
     
-    def extract_pts_feat(self, voxel_features, coors, controller_layers=None, drop_all_lidar_layers=False, losses=None):
+    def extract_pts_feat(self, voxel_features, coors, controller_layers=None, drop_all_lidar_layers=False, losses=None, predicted_noise=None, camera_alloc=None):
         if self.with_pts_backbone:
             # Keep operations in float32 to preseve voxelization accuracy
             with torch.autocast('cuda', enabled=False):
@@ -260,7 +265,13 @@ class CmtDetector(MVXTwoStageDetector):
 
                 controller_training = self.controller is not None and self.controller.training
                 # Executes FlatFormer
-                x = self.pts_middle_encoder(voxel_features, coors, batch_size, retained_layer_list=retained_layers, controller_training=controller_training, early_exit_lidar=self.lidar_early_exit_model, losses=losses)
+                x = self.pts_middle_encoder(voxel_features, coors, batch_size, 
+                                            retained_layer_list=retained_layers, 
+                                            controller_training=controller_training, 
+                                            early_exit_lidar=self.early_exit_lidar, 
+                                            losses=losses, 
+                                            predicted_noise=predicted_noise, 
+                                            camera_alloc=camera_alloc)
                 
                 # Pts Backbone
                 x = self.pts_backbone(x)
@@ -326,28 +337,43 @@ class CmtDetector(MVXTwoStageDetector):
         if self.controller is not None:
             flatformer_layers = len(self.pts_middle_encoder.block_list) * 4
             layer_allocations, predicted_categories = self.controller(voxel_features, coors, imgs, flatformer_layers)
+            
             retained_layers_lidar = layer_allocations[:, :flatformer_layers]
             retained_layers_img = layer_allocations[:, flatformer_layers:]
+
+            predicted_noise = None
+            camera_alloc = None
+            lidar_alloc = None
+            if self.early_exit_camera is not None:
+                predicted_noise = torch.argmax(predicted_categories.detach(), dim=-1)
+                lidar_alloc = torch.sum(retained_layers_lidar.detach(), dim=-1)
+            if self.early_exit_lidar is not None:
+                predicted_noise = torch.argmax(predicted_categories.detach(), dim=-1)
+                camera_alloc = torch.sum(retained_layers_img.detach(), dim=-1)
 
             pts_feats = self.extract_pts_feat(
                 voxel_features,
                 coors,
                 controller_layers=retained_layers_lidar,
-                losses=losses
+                losses=losses,
+                predicted_noise=predicted_noise,
+                camera_alloc=camera_alloc
             )
            
             img_feats = self.extract_img_feat(
                 imgs, 
                 batch_input_metas, 
                 controller_selected_layers=retained_layers_img,
-                losses=losses
+                losses=losses,
+                predicted_noise=predicted_noise,
+                lidar_alloc=lidar_alloc
             )
             # Add the cross_entropy corruption prediction loss
             if losses is not None and self.controller.training:
                 losses['noise_pred_loss'] = nn.functional.cross_entropy(predicted_categories, gt_corruption_labels.cuda())
-            if get_dist_info()[0] == 0:
-                print("Gt_corruption_labels", gt_corruption_labels[0])
-                print('Predicted Noise', predicted_categories[0])
+            # if get_dist_info()[0] == 0:
+            #     print("Gt_corruption_labels", gt_corruption_labels[0])
+            #     print('Predicted Noise', predicted_categories[0])
         else: # If we are not doing controller training
             pts_feats = self.extract_pts_feat(
                 voxel_features=voxel_features,
@@ -400,7 +426,7 @@ class CmtDetector(MVXTwoStageDetector):
         message_hub = MessageHub.get_current_instance()
         current_step = message_hub.get_info('iter')
         # Set the controller to eval mode
-        if self.lidar_early_exit_model is not None or self.camera_early_exit_model is not None:
+        if self.early_exit_lidar is not None or self.early_exit_camera is not None:
             self.controller.eval()
         batch_input_metas = [item.metainfo for item in batch_data_samples]
         losses = dict()
@@ -448,8 +474,9 @@ class CmtDetector(MVXTwoStageDetector):
         # Add additional loss for the mask
         if self.enable_pruning:
             #L1 sparsity, masks already binary
-            losses_pts['img_mask_loss'] = torch.mean(img_mask)
-            losses_pts['pts_mask_loss'] = torch.mean(points_mask)
+            # We see a large-ish drop in performance, change to divide by 3 to encourage keeping accuracy
+            losses_pts['img_mask_loss'] = torch.mean(img_mask) / 3
+            losses_pts['pts_mask_loss'] = torch.mean(points_mask) / 3
         losses.update(losses_pts)
         return losses
 
@@ -481,9 +508,13 @@ class CmtDetector(MVXTwoStageDetector):
             - bbox_3d (:obj:`BaseInstance3DBoxes`): Prediction of bboxes,
                 contains a tensor with shape (num_instances, 7).
         """
-        # start = torch.cuda.Event(enable_timing=True)
-        # end = torch.cuda.Event(enable_timing=True)
-        # start.record()
+        # if self.timing_stats['count'] == 0:
+        #     config.triton.cudagraphs = True
+        #     self.early_exit_camera = torch.compile(self.early_exit_camera,mode="reduce-overhead",fullgraph=True).eval()
+        #     self.early_exit_lidar = torch.compile(self.early_exit_lidar,mode="reduce-overhead",fullgraph=True).eval()
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        start.record()
 
         batch_input_metas = [item.metainfo for item in batch_data_samples]
 
@@ -503,14 +534,17 @@ class CmtDetector(MVXTwoStageDetector):
             outs = self.pts_bbox_head(pts_feats, img_feats, batch_input_metas, img_mask=img_mask, pts_mask=points_mask)
         else:
             outs = self.pts_bbox_head(pts_feats, img_feats, batch_input_metas)
-        
-        
 
         bbox_list = self.pts_bbox_head.get_bboxes(outs, batch_input_metas, rescale=False)
-        # end.record()
-        # torch.cuda.synchronize()
-        # with open('full_model_latency.txt', 'a') as handle:
-        #     print("Elapsed:", start.elapsed_time(end), file=handle)
+        end.record()
+        torch.cuda.synchronize()
+        with open('full_model_latency.txt', 'a') as handle:
+            print("Elapsed:", start.elapsed_time(end), file=handle)
+        self.timing_stats['count'] += 1
+        
+        # if self.timing_stats['count'] == 4449:
+        #     sys.exit(0)
+
         return self.add_pred_to_datasample(batch_data_samples, bbox_list)
 
 

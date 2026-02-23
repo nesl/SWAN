@@ -3,7 +3,7 @@ def calculate_average(file_path):
         with open(file_path, 'r') as f:
             # Extract numbers: strip 'Elapsed: ', convert to float
             times = [float(line.split(':')[-1].strip()) for line in f if line.strip()]
-        
+        times = times[1:]
         if not times:
             return "No data found."
 

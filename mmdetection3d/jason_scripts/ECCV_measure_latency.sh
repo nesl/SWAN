@@ -1,12 +1,7 @@
-#!/bin/bash
 
-if [ $# -gt 0 ]; then
-    BUDGETS=("$@")
-else
-    BUDGETS=(4 6 8 10 12 14 16)
-fi
+BUDGETS=(16 8 6 4)
 
-CORRUPTIONS=('lidar_fog' 'camera_fog' 'beamsreducing' 'lidar_motionblur' 'camera_motionblur' 'dark' 'none')
+CORRUPTIONS=('camera_fog' 'beamsreducing' 'lidar_motionblur' 'camera_motionblur' 'dark')
 split='day_dry'
 
 LIDAR_LAYERS[4]="[1,0,0,0,0,0,0,1]"
@@ -43,31 +38,36 @@ for budget in "${BUDGETS[@]}"; do
     for corruption in "${CORRUPTIONS[@]}"; do
         echo "Running: Budget $budget | Corruption $corruption"
 
-        # # Test the Naive Allocation Approach
-        # python3 tools/test.py /workspace/mmdetection3d/projects/CMT/configs/ECCV_Configs/cmt_voxel_015_flatformer_swin_multicorrupt.py \
-        #     ./work_dirs/cmt_train_all_corruptions/epoch_8.pth \
-        #     --cfg-options model.test_lidar_retained_layers="$current_lidar" \
-        #     model.test_img_retained_layers="$current_img" \
-        #     test_dataloader.dataset.corruptions="[$corruption]" \
-        #     --work-dir ./work_dirs/Standard_Multicorrupt_test_$corruption/Naive_Alloc_${budget}
+        # Test the Naive Allocation Approach
+        python3 tools/test.py /workspace/mmdetection3d/projects/CMT/configs/ECCV_Configs/cmt_voxel_015_flatformer_swin_multicorrupt.py \
+            ./work_dirs/cmt_train_all_corruptions/epoch_8.pth \
+            --cfg-options model.test_lidar_retained_layers="$current_lidar" \
+            model.test_img_retained_layers="$current_img" \
+            test_dataloader.dataset.corruptions="[$corruption]" \
+            --work-dir ./work_dirs/temp
 
+        mv full_model_latency.txt Naive_${corruption}_${budget}_latency.txt
         # Test the Universal Controller
         python3 tools/test.py /workspace/mmdetection3d/projects/CMT/configs/ECCV_Configs/Universal_Controller_cmt_voxel_015_flatformer_swin_multicorrupt.py \
             /workspace/mmdetection3d/work_dirs/ECCV_Controller_universal_model/epoch_16.pth \
             --cfg-options model.controller.layer_budgets="[$budget]" \
             test_dataloader.dataset.corruptions="[$corruption]" \
-            --work-dir ./work_dirs/ECCV_multicorrupt_universal_test_${corruption}/ECCV_Controller_$budget \
-            > ./work_dirs/ECCV_Controller_Universal_test_${budget}_${corruption}.txt
-
-        # # Test the Early-Exit Variant
+            --work-dir ./work_dirs/temp
+        mv full_model_latency.txt Controller_${corruption}_${budget}_latency.txt
+        # Test the Early-Exit Variant
         python3 tools/test.py /workspace/mmdetection3d/projects/CMT/configs/ECCV_Configs/EE_Universal_Controller.py \
             /workspace/mmdetection3d/work_dirs/EE_Universal_Controller/epoch_16.pth \
             --cfg-options model.controller.layer_budgets="[$budget]" \
             test_dataloader.dataset.corruptions="[$corruption]" \
-            --work-dir ./work_dirs/EE_universal_test_${corruption}/EE_Controller_$budget \
-            > ./work_dirs/EE_Universal_test_${budget}_${corruption}.txt
-
-
+            --work-dir ./work_dirs/temp
+        mv full_model_latency.txt EE_${corruption}_${budget}_latency.txt
+        # Test the ADMN Variant
+        python3 tools/test.py /workspace/mmdetection3d/projects/CMT/configs/ECCV_Configs/ADMN_controller.py \
+            /workspace/mmdetection3d/work_dirs/ADMN/ADMN_model_${budget}/epoch_4.pth \
+            --cfg-options model.controller.layer_budget=${budget} \
+            test_dataloader.dataset.corruptions="[$corruption]" \
+            --work-dir ./work_dirs/temp
+        mv full_model_latency.txt ADMN_${corruption}_${budget}_latency.txt
         # Test the Hard Token Pruning
     done
 done

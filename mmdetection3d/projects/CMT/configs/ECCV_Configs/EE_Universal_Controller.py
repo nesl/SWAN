@@ -10,7 +10,7 @@ model=dict(
 )
 
 custom_hooks = [
-    dict(type='FreezeLayersHook', train_module_names=['lidar_early_exit_model', 'camera_early_exit_model'])
+    dict(type='FreezeLayersHook', train_module_names=['early_exit_lidar', 'early_exit_camera'])
 ]
 
 

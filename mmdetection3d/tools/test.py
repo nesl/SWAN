@@ -8,6 +8,9 @@ from mmengine.registry import RUNNERS
 from mmengine.runner import Runner
 
 from mmdet3d.utils import replace_ceph_backend
+import torch._inductor.config as config
+
+
 
 
 # TODO: support fuse_conv_bn and format_only
@@ -97,6 +100,7 @@ def trigger_visualization_hook(cfg, args):
 
 
 def main():
+        # Force enable CUDA Graphs regardless of the multi-device environment
     args = parse_args()
 
     # load config

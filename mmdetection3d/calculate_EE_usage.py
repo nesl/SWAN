@@ -47,7 +47,7 @@ def calculate_average_utilization(file_path):
     return avg_lidar, avg_image, num_samples
 
 # Usage:
-path = "/workspace/mmdetection3d/work_dirs/ADMN_EE_Controller_test_20_beamsreducing.txt"
+path = "/workspace/mmdetection3d/work_dirs/EE_Universal_test_16_lidar_motionblur.txt"
 avg_l, avg_i, total = calculate_average_utilization(path)
 print(f"Processed {total} samples.")
 print(f"Average Lidar Utilization: {avg_l:.2f} / 8.0")

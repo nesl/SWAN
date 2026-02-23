@@ -485,7 +485,9 @@ class SwinBlockSequence(BaseModule):
 
         self.downsample = downsample
     # list of 0, 1's where 0 means a layer is dropped and 1 is layer is kept
-    def forward(self, x, hw_shape, retained_layer_list=None, controller_training=False, early_exit_camera=None, losses=None, block_start_layer=0, remaining_layer_count=None):
+    def forward(self, x, hw_shape, retained_layer_list=None, controller_training=False, 
+                early_exit_camera=None, losses=None, block_start_layer=0, 
+                remaining_layer_count=None, predicted_noise=None, lidar_alloc=None):
         decision_list = []
         logits_list = []
 
@@ -494,8 +496,21 @@ class SwinBlockSequence(BaseModule):
         for i, block in enumerate(self.blocks):
             # If list does not exist OR and the value is 1 OR controller is training
             # Retained layer list can either be controller decided (B_size, N), or (1, N) for ordinary layerdrop
+            
             if early_exit_training or (early_exit_camera is not None and not self.training and retained_layer_list[0][i]):
-                raw_logits = early_exit_camera(x, block_start_layer + i, torch.tensor(remaining_layer_count).to(x.device))[:, 0] # Weird shape, don't want to squeeze
+                
+                raw_logits = early_exit_camera(x, block_start_layer + i, 
+                                               torch.tensor(remaining_layer_count).to(x.device), 
+                                               retained_layer_list[:, i],
+                                               predicted_noise=predicted_noise,
+                                               lidar_alloc=lidar_alloc)[:, 0] # Weird shape, don't want to squeeze
+                # start = torch.cuda.Event(enable_timing=True)
+                # end = torch.cuda.Event(enable_timing=True)
+                # start.record()
+                # # x_new = block(x, hw_shape)
+                # end.record()
+                # torch.cuda.synchronize()
+                # print(start.elapsed_time(end))
                 for layer_idx in range(len(remaining_layer_count)):
                     remaining_layer_count[layer_idx] -= retained_layer_list[:, i].int().detach()[layer_idx].item()
 
@@ -510,6 +525,7 @@ class SwinBlockSequence(BaseModule):
                 decision = _gumbel_sigmoid(raw_logits, training=early_exit_camera.training, tau=max(0.25/current_epoch, 0.05), hard=not early_exit_camera.training) # b_size
 
                 decision_list.append(decision[0].item())
+                
                 # Ignore this layer during inference
                 if not early_exit_camera.training:
                     if decision[0].item() == 0:
@@ -533,9 +549,9 @@ class SwinBlockSequence(BaseModule):
                 else:
                     x = x_new
 
-        if get_dist_info()[0] == 0 and early_exit_camera is not None:
-            print("Image Early Exit Logits", logits_list)
-            print("Image Early Exit Decisions", decision_list)
+        # if get_dist_info()[0] == 0 and early_exit_camera is not None:
+        #     print("Image Early Exit Logits", logits_list)
+        #     print("Image Early Exit Decisions", decision_list)
         if self.downsample:
             x_down, down_hw_shape = self.downsample(x, hw_shape)
             return x_down, down_hw_shape, x, hw_shape
@@ -823,7 +839,7 @@ class SwinTransformer(BaseModule):
             # load state_dict
             self.load_state_dict(state_dict, False)
 
-    def forward(self, x, retained_layer_list=None, controller_training=False, early_exit_camera=None, losses=None):
+    def forward(self, x, retained_layer_list=None, controller_training=False, early_exit_camera=None, losses=None, predicted_noise=None, lidar_alloc=None):
         x, hw_shape = self.patch_embed(x)
 
         if self.use_abs_pos_embed:
@@ -843,7 +859,12 @@ class SwinTransformer(BaseModule):
                 stage_layer_list = retained_layer_list[:, current_layer:current_layer + len(stage.blocks)]
                 current_layer += len(stage.blocks)
 
-            x, hw_shape, out, out_hw_shape = stage(x, hw_shape, stage_layer_list, controller_training, early_exit_camera=early_exit_camera, losses=losses, block_start_layer=current_layer-len(stage.blocks), remaining_layer_count=remaining_layer_count)
+            x, hw_shape, out, out_hw_shape = stage(x, hw_shape, stage_layer_list, 
+                                                   controller_training, early_exit_camera=early_exit_camera,
+                                                     losses=losses, block_start_layer=current_layer-len(stage.blocks), 
+                                                     remaining_layer_count=remaining_layer_count,
+                                                     predicted_noise=predicted_noise,
+                                                     lidar_alloc=lidar_alloc)
 
             if i in self.out_indices:
                 norm_layer = getattr(self, f'norm{i}')
