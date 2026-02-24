@@ -482,7 +482,7 @@ class SwinBlockSequence(BaseModule):
                 with_cp=with_cp,
                 init_cfg=None)
             self.blocks.append(block)
-
+        self.register_buffer('index_lookup', torch.arange(13, dtype=torch.int32))
         self.downsample = downsample
     # list of 0, 1's where 0 means a layer is dropped and 1 is layer is kept
     def forward(self, x, hw_shape, retained_layer_list=None, controller_training=False, 
@@ -499,8 +499,8 @@ class SwinBlockSequence(BaseModule):
             
             if early_exit_training or (early_exit_camera is not None and not self.training and retained_layer_list[0][i]):
                 
-                raw_logits = early_exit_camera(x, block_start_layer + i, 
-                                               torch.tensor(remaining_layer_count).to(x.device), 
+                raw_logits = early_exit_camera(x, self.index_lookup[block_start_layer + i], 
+                                               remaining_layer_count,
                                                retained_layer_list[:, i],
                                                predicted_noise=predicted_noise,
                                                lidar_alloc=lidar_alloc)[:, 0] # Weird shape, don't want to squeeze
@@ -511,8 +511,10 @@ class SwinBlockSequence(BaseModule):
                 # end.record()
                 # torch.cuda.synchronize()
                 # print(start.elapsed_time(end))
-                for layer_idx in range(len(remaining_layer_count)):
-                    remaining_layer_count[layer_idx] -= retained_layer_list[:, i].int().detach()[layer_idx].item()
+                # for layer_idx in range(len(remaining_layer_count)):
+                #     remaining_layer_count[layer_idx] -= retained_layer_list[:, i].int().detach()[layer_idx].item()
+                with torch.no_grad():
+                    remaining_layer_count -= torch.round(retained_layer_list[:, i].detach())
 
                 logits_list.append(raw_logits[0].item()) # Append batch 1
 
@@ -522,7 +524,7 @@ class SwinBlockSequence(BaseModule):
                     current_epoch = message_hub.get_info('epoch') + 1
                 
                 # Outputted binary decision
-                decision = _gumbel_sigmoid(raw_logits, training=early_exit_camera.training, tau=max(0.25/current_epoch, 0.05), hard=not early_exit_camera.training) # b_size
+                decision = _gumbel_sigmoid(raw_logits, training=early_exit_camera.training, tau=max(1/(2 * current_epoch), 0.05), hard=not early_exit_camera.training) # b_size
 
                 decision_list.append(decision[0].item())
                 
@@ -848,9 +850,10 @@ class SwinTransformer(BaseModule):
 
         outs = []
         current_layer = 0
-        remaining_layer_count=[12] * (x.shape[0]//6)
-        if early_exit_camera is not None:
-            remaining_layer_count = torch.round(torch.sum(retained_layer_list, dim=-1)).int().detach().tolist()
+        with torch.no_grad():
+            remaining_layer_count=torch.full((x.shape[0]//6, ), 12, device=x.device)
+            if early_exit_camera is not None:
+                remaining_layer_count = torch.round(torch.sum(retained_layer_list, dim=-1)).int().detach()
     
         for i, stage in enumerate(self.stages):
             stage_layer_list = None

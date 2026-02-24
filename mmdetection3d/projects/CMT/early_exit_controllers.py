@@ -5,15 +5,7 @@ from torch.nn.utils.rnn import pad_sequence
 
 import torch.nn.functional as F
 
-def pad_or_truncate(tensor, target_size=5000):
-    n = tensor.shape[0]
-    if n >= target_size:
-        return tensor[:target_size]
-    else:
-        # pad(left, right, top, bottom) for 2D, but we only pad the first dim
-        # The syntax for 2D padding: (dim_d_pad_left, dim_d_pad_right, dim_n_pad_left, dim_n_pad_right)
-        padding_size = target_size - n
-        return F.pad(tensor, (0, 0, 0, padding_size), "constant", 0)
+
 
 import torch
 import math
@@ -48,9 +40,7 @@ def get_sinusoidal_embeddings(budget_tensor, dim, max_period=24):
     
     return embedding
 
-
 @MODELS.register_module()
-# Use conv layers with maxpooling
 class Early_Exit_Camera(nn.Module):
     def __init__(self, embed_dim=64):
         super().__init__()
@@ -106,11 +96,11 @@ class Early_Exit_Camera(nn.Module):
             self.processing_dict['384'], 
             self.processing_dict['768']
         ])
- 
+        self.register_buffer('index_lookup', torch.arange(13, dtype=torch.int32))
         embeds = get_sinusoidal_embeddings(torch.arange(0,13), dim=self.embed_dim//2)
         self.register_buffer('sinusoidal_embeds', embeds)
     # We assume 320 x 800 images
-    def forward(self, swin_feature, layer_count, remaining_layer_count, retained_layer_list, predicted_noise, lidar_alloc):
+    def forward(self, swin_feature, l_count_tensor, remaining_layer_count, retained_layer_list, predicted_noise, lidar_alloc):
         _, N, D = swin_feature.shape
         swin_feature = torch.reshape(swin_feature, (-1, 6 * N, D))
         B_size = swin_feature.shape[0]
@@ -130,7 +120,8 @@ class Early_Exit_Camera(nn.Module):
         
         #lidar_alloc = get_sinusoidal_embeddings(self.lidar_alloc.int(), dim=self.embed_dim//2) # What did the other mod get?
         controller_decision = (retained_layer_list.detach() * 2 - 1).unsqueeze(-1).expand(-1, self.embed_dim//2)
-        layer_cls = self.sinusoidal_embeds[torch.full((B_size,), layer_count, dtype=torch.int)]
+        l_idx = l_count_tensor.view(1).expand(B_size)
+        layer_cls = self.sinusoidal_embeds[l_idx]
         remaining_embed = self.sinusoidal_embeds[remaining_layer_count.int()]
         # layer_cls = get_sinusoidal_embeddings(torch.full((B_size,), layer_count, dtype=torch.int), dim=self.embed_dim//2).to(swin_feature.device)
         # remaining_embed = get_sinusoidal_embeddings(remaining_layer_count.int(), dim=self.embed_dim//2).to(swin_feature.device)
@@ -162,21 +153,19 @@ class Early_Exit_Lidar(nn.Module):
             nn.ReLU(),
             nn.Linear(64, 1)
         )
-    def forward(self, voxel_batches, layer_count, remaining_layer_count, retained_layer_list, predicted_noise, camera_alloc):
-        voxel_batches = [pad_or_truncate(v) for v in voxel_batches]
-        aggregated_tensor = torch.stack(voxel_batches, dim=0)
+    def forward(self, aggregated_tensor, l_count_tensor, remaining_layer_count, retained_layer_list, predicted_noise, camera_alloc):
         condensed_embed = self.process_lidar(torch.transpose(aggregated_tensor, 1, 2))[:, 0]
 
         noise_embed = self.noise_embed[predicted_noise] # What was the predicted noise?
         camera_alloc = self.sinusoidal_embeds[camera_alloc.int()] # What did the other mod pick?
 
         controller_decision = (retained_layer_list.detach() * 2 - 1).unsqueeze(-1).expand(-1, self.embed_dim//2)
-        layer_cls = self.sinusoidal_embeds[torch.full((len(voxel_batches),), layer_count, dtype=torch.int)]
+        l_idx = l_count_tensor.view(1).expand(condensed_embed.shape[0])
+        layer_cls = self.sinusoidal_embeds[l_idx]
         remaining_embed = self.sinusoidal_embeds[remaining_layer_count.int()]
         condensed_embed = torch.cat((condensed_embed, camera_alloc, noise_embed, layer_cls, controller_decision, remaining_embed), dim=-1) # incorporate layer info
         return 3 * torch.tanh(self.output_head(condensed_embed))
 
-        
 
 if __name__=='__main__':
     test = Early_Exit_Camera().cuda()

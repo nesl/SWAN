@@ -10,9 +10,19 @@ from torch.nn import functional as F
 from mmdet3d.registry import MODELS
 from mmengine.dist import get_dist_info
 from mmengine.logging import MessageHub
-
+import time
 __all__ = ["FlatFormer"]
 
+
+def pad_or_truncate(tensor, target_size=5000):
+    n = tensor.shape[0]
+    if n >= target_size:
+        return tensor[:target_size]
+    else:
+        # pad(left, right, top, bottom) for 2D, but we only pad the first dim
+        # The syntax for 2D padding: (dim_d_pad_left, dim_d_pad_right, dim_n_pad_left, dim_n_pad_right)
+        padding_size = target_size - n
+        return F.pad(tensor, (0, 0, 0, padding_size), "constant", 0)
 
 def _create_cu_seqlens(batch_size: int, num_tokens: int, device: torch.device) -> torch.Tensor:
     return torch.arange(
@@ -133,7 +143,7 @@ class GroupAttention(nn.Module):
         super().__init__()
         self.group_size = group_size
         self.attn = FlashAttention(in_channels, num_heads)
-        # self.attn = OrdinaryMultiHeadAttn(in_channels, num_heads)
+        #self.attn = OrdinaryMultiHeadAttn(in_channels, num_heads)
 
     def forward(self, x, pe):
         size = x.shape[0]
@@ -225,6 +235,7 @@ class BasicBlock(nn.Module):
                 group_size=group_size,
             )
             self.block.append(layer)
+        self.register_buffer('index_lookup', torch.arange(13, dtype=torch.int32))
     # TODO: We may have to update this structure slightly when moving towards TensorRT and edge devices 
     def forward(self, x: torch.Tensor, pe: torch.Tensor, mappings: Dict[str, Any], 
                 retained_layer_list=None, controller_training=False, early_exit_lidar=None,
@@ -242,27 +253,34 @@ class BasicBlock(nn.Module):
                 lidar_feature = x[indices]
                 lengths = [mappings['batch_start_indices'][i+1] - mappings['batch_start_indices'][i] for i in range(len(mappings['batch_start_indices']) - 1)]
                 voxel_batches = torch.split(lidar_feature, lengths)
-                start = torch.cuda.Event(enable_timing=True)
-                end = torch.cuda.Event(enable_timing=True)
-                start.record()
-                raw_logits = early_exit_lidar(voxel_batches, block_layer_start + k, 
-                                              torch.tensor(remaining_layer_count).to(x.device), 
+                # torch.cuda.synchronize()
+                # cpu_start = time.perf_counter()
+                voxel_batches = [pad_or_truncate(v) for v in voxel_batches]
+                aggregated_tensor = torch.stack(voxel_batches, dim=0)
+                l_count_tensor = self.index_lookup[block_layer_start + k]
+                raw_logits = early_exit_lidar(aggregated_tensor, l_count_tensor, 
+                                              remaining_layer_count, 
                                               retained_layer_list[:, k], predicted_noise=predicted_noise,
                                               camera_alloc=camera_alloc)
-                end.record()
-                torch.cuda.synchronize()
-                print(start.elapsed_time(end))
+                # gpu_done = time.perf_counter()
+                # print(f"Total time (CPU Queue + GPU Exec): {(gpu_done - cpu_start) * 1000:.4f} ms")
+        
+                # end.record()
+                # torch.cuda.synchronize()
+                # print(start.elapsed_time(end))
                 # Subtract the mask to tell the EE module how many controller layers it has left
-                # We have to keep as list or else pytorch freaks out about grad computation
-                for list_idx in range(len(remaining_layer_count)):
-                    remaining_layer_count[list_idx] -= torch.round(retained_layer_list[:, k])[list_idx].item()
+                # for list_idx in range(len(remaining_layer_count)):
+                    #remaining_layer_count[list_idx] -= torch.round(retained_layer_list[:, k])[list_idx].item()
+                with torch.no_grad():
+                    remaining_layer_count -= torch.round(retained_layer_list[:, k].detach())
+
                 logits_list.append(raw_logits[0][0].item())
 
                 current_epoch = 1
                 if early_exit_lidar.training:
                     message_hub = MessageHub.get_current_instance()
                     current_epoch = message_hub.get_info('epoch') + 1
-                decision = torch.squeeze(_gumbel_sigmoid(raw_logits, training=early_exit_lidar.training, tau=max(0.25/current_epoch, 0.05), hard=not early_exit_lidar.training)) # b_size x 1
+                decision = torch.squeeze(_gumbel_sigmoid(raw_logits, training=early_exit_lidar.training, tau=max(1/(current_epoch*2), 0.05), hard=not early_exit_lidar.training)) # b_size x 1
                 # Ignore this layer during inference
                 if not early_exit_lidar.training:
                     decision_list.append(decision.item())
@@ -509,10 +527,10 @@ class FlatFormer(nn.Module):
         pe = self.embedding(coords, x.dtype)
         mappings = self.mapping(coords, batch_size)
         # This is to pass to the early-exit to make it aware of how many layers it has left to execute
-        remaining_layer_count=[8] * batch_size
-        
-        if early_exit_lidar is not None:
-            remaining_layer_count = torch.round(torch.sum(retained_layer_list, dim=-1)).int().detach().tolist()
+        with torch.no_grad():
+            remaining_layer_count=torch.full((batch_size, ), 8, device=pe.device)
+            if early_exit_lidar is not None:
+                remaining_layer_count = torch.round(torch.sum(retained_layer_list, dim=-1)).int().detach()
 
         for i, block in enumerate(self.block_list):
             # Chunk the list four at a time for each block

@@ -15,7 +15,7 @@ custom_hooks = [
 
 
 # runtime settings
-train_cfg = dict(by_epoch=True, max_epochs=16, val_interval=17)
+train_cfg = dict(by_epoch=True, max_epochs=8, val_interval=17) # USed to be 16
 val_cfg = dict()
 test_cfg = dict()
 
@@ -23,7 +23,7 @@ param_scheduler = [
     dict(
         type='LinearLR',
         start_factor=1.0,     # Start at 100% of the current LR
-        end_factor=0.01,       # Gradually decay to 10% of the LR
+        end_factor=0.1,       # Used ot be 0.01 in workign version
         by_epoch=True,
         begin=0,             # Decay starts at the beginning of Epoch 12
         end=8,
@@ -35,7 +35,7 @@ find_unused_parameters=True
 
 optim_wrapper = dict(
     type='AmpOptimWrapper',
-    optimizer=dict(type='AdamW', lr=1e-4, weight_decay=0.01),
+    optimizer=dict(type='AdamW', lr=1e-5, weight_decay=0.01), #Was 1e-4
     clip_grad=dict(max_norm=35, norm_type=2)
 )
 

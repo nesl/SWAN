@@ -1,8 +1,12 @@
+import os
 def calculate_average(file_path):
     try:
         with open(file_path, 'r') as f:
+            times = []
+            for line in f:
+                if line.strip() and line.strip()[:8] == 'Elapsed:':
+                    times.append(float(line.split(':')[-1].strip()))
             # Extract numbers: strip 'Elapsed: ', convert to float
-            times = [float(line.split(':')[-1].strip()) for line in f if line.strip()]
         times = times[1:]
         if not times:
             return "No data found."
@@ -20,4 +24,6 @@ def calculate_average(file_path):
         print("Error: Could not parse a value into a number.")
 
 # Run the function
-calculate_average('full_model_latency.txt')
+for file in sorted(os.listdir('No_Flash_Latencies')):
+    print(file)
+    calculate_average(f'No_Flash_Latencies/{file}')

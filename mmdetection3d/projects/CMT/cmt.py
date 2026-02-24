@@ -163,6 +163,7 @@ class CmtDetector(MVXTwoStageDetector):
         
         if lidar_early_exit_model:
             self.early_exit_lidar = MODELS.build(lidar_early_exit_model)
+            
         else:
             self.early_exit_lidar = None
 
@@ -284,6 +285,12 @@ class CmtDetector(MVXTwoStageDetector):
                 return x
         return [None]
     
+    def manual_scatter(self, voxel_features, coors, batch_size, grid_shape, feat_channels):
+        H, W = grid_shape
+        C = feat_channels
+        canvas = torch.zeros((batch_size, C, H, W), device=voxel_features.device, dtype=voxel_features.dtype)
+        canvas[coors[:, 0], :, coors[:, 2], coors[:, 3]] = voxel_features
+        return canvas
 
     # This is the main feature extract function that calls the subfunctions for pts and images
     def extract_feat(self, batch_inputs_dict,
@@ -508,13 +515,10 @@ class CmtDetector(MVXTwoStageDetector):
             - bbox_3d (:obj:`BaseInstance3DBoxes`): Prediction of bboxes,
                 contains a tensor with shape (num_instances, 7).
         """
-        # if self.timing_stats['count'] == 0:
-        #     config.triton.cudagraphs = True
-        #     self.early_exit_camera = torch.compile(self.early_exit_camera,mode="reduce-overhead",fullgraph=True).eval()
-        #     self.early_exit_lidar = torch.compile(self.early_exit_lidar,mode="reduce-overhead",fullgraph=True).eval()
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
+        if self.timing_stats['count'] == 1:
+            self.early_exit_lidar = torch.compile(self.early_exit_lidar, mode="reduce-overhead").eval()
+            self.early_exit_camera = torch.compile(self.early_exit_camera, mode="reduce-overhead").eval()
+        start = time.perf_counter()
 
         batch_input_metas = [item.metainfo for item in batch_data_samples]
 
@@ -536,10 +540,9 @@ class CmtDetector(MVXTwoStageDetector):
             outs = self.pts_bbox_head(pts_feats, img_feats, batch_input_metas)
 
         bbox_list = self.pts_bbox_head.get_bboxes(outs, batch_input_metas, rescale=False)
-        end.record()
         torch.cuda.synchronize()
-        with open('full_model_latency.txt', 'a') as handle:
-            print("Elapsed:", start.elapsed_time(end), file=handle)
+        elapsed = time.perf_counter() - start
+        # print("Elapsed:", elapsed)
         self.timing_stats['count'] += 1
         
         # if self.timing_stats['count'] == 4449:
