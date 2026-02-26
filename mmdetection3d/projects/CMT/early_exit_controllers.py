@@ -47,9 +47,8 @@ class Early_Exit_Camera(nn.Module):
         self.embed_dim = embed_dim
 
         self.predicted_noise = None
-        self.noise_embed = nn.Parameter(torch.randn(10, embed_dim) * 2)
         self.lidar_alloc = None
-
+        self.noise_embed = nn.Parameter(torch.randn(10, embed_dim) * 2)
         self.processing_dict = nn.ModuleDict()
         self.processing_dict['96'] = nn.Sequential(
             nn.Conv1d(in_channels=96, out_channels=16, kernel_size=10, stride=16),
@@ -108,11 +107,10 @@ class Early_Exit_Camera(nn.Module):
         
         idx = 0 if D == 96 else 1 if D == 192 else 2 if D == 384 else 3
         condensed_embed = self.procs[idx](swin_feature)[:, 0] # get rid of the 1 dimension
-        
+        noise_embed = self.noise_embed[predicted_noise]
         # start = torch.cuda.Event(enable_timing=True)
         # end = torch.cuda.Event(enable_timing=True)
         # start.record()
-        noise_embed = self.noise_embed[predicted_noise] # What was the predicted noise?
         # end.record()
         # torch.cuda.synchronize()
         # print(start.elapsed_time(end))
@@ -156,7 +154,7 @@ class Early_Exit_Lidar(nn.Module):
     def forward(self, aggregated_tensor, l_count_tensor, remaining_layer_count, retained_layer_list, predicted_noise, camera_alloc):
         condensed_embed = self.process_lidar(torch.transpose(aggregated_tensor, 1, 2))[:, 0]
 
-        noise_embed = self.noise_embed[predicted_noise] # What was the predicted noise?
+        noise_embed = self.noise_embed[predicted_noise]
         camera_alloc = self.sinusoidal_embeds[camera_alloc.int()] # What did the other mod pick?
 
         controller_decision = (retained_layer_list.detach() * 2 - 1).unsqueeze(-1).expand(-1, self.embed_dim//2)

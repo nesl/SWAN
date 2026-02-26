@@ -250,27 +250,23 @@ class BasicBlock(nn.Module):
             indices = mappings[name]
             # If we are training early exit, or if we are testing with early_exit_enabled and controller specifically activates this layer (bsize 1)
             if early_exit_training or (early_exit_lidar is not None and not self.training and retained_layer_list[0][k]):
-                lidar_feature = x[indices]
-                lengths = [mappings['batch_start_indices'][i+1] - mappings['batch_start_indices'][i] for i in range(len(mappings['batch_start_indices']) - 1)]
-                voxel_batches = torch.split(lidar_feature, lengths)
-                # torch.cuda.synchronize()
-                # cpu_start = time.perf_counter()
-                voxel_batches = [pad_or_truncate(v) for v in voxel_batches]
-                aggregated_tensor = torch.stack(voxel_batches, dim=0)
+                
+                if self.training:
+                    lidar_feature = x[indices]
+                    lengths = [mappings['batch_start_indices'][i+1] - mappings['batch_start_indices'][i] for i in range(len(mappings['batch_start_indices']) - 1)]
+                    voxel_batches = torch.split(lidar_feature, lengths)
+                    voxel_batches = [pad_or_truncate(v) for v in voxel_batches]
+                    aggregated_tensor = torch.stack(voxel_batches, dim=0)
+                else:
+                    aggregated_tensor = pad_or_truncate(x[indices]).unsqueeze(0)
                 l_count_tensor = self.index_lookup[block_layer_start + k]
+
                 raw_logits = early_exit_lidar(aggregated_tensor, l_count_tensor, 
                                               remaining_layer_count, 
                                               retained_layer_list[:, k], predicted_noise=predicted_noise,
                                               camera_alloc=camera_alloc)
-                # gpu_done = time.perf_counter()
-                # print(f"Total time (CPU Queue + GPU Exec): {(gpu_done - cpu_start) * 1000:.4f} ms")
-        
-                # end.record()
-                # torch.cuda.synchronize()
-                # print(start.elapsed_time(end))
-                # Subtract the mask to tell the EE module how many controller layers it has left
-                # for list_idx in range(len(remaining_layer_count)):
-                    #remaining_layer_count[list_idx] -= torch.round(retained_layer_list[:, k])[list_idx].item()
+                
+                
                 with torch.no_grad():
                     remaining_layer_count -= torch.round(retained_layer_list[:, k].detach())
 
@@ -280,8 +276,11 @@ class BasicBlock(nn.Module):
                 if early_exit_lidar.training:
                     message_hub = MessageHub.get_current_instance()
                     current_epoch = message_hub.get_info('epoch') + 1
-                decision = torch.squeeze(_gumbel_sigmoid(raw_logits, training=early_exit_lidar.training, tau=max(1/(current_epoch*2), 0.05), hard=not early_exit_lidar.training)) # b_size x 1
+                    decision = torch.squeeze(_gumbel_sigmoid(raw_logits, training=False, tau=max(0.25/current_epoch, 0.05), hard=False)) # b_size x 1
+                else:
+                    decision = (raw_logits > 0).int()
                 # Ignore this layer during inference
+                
                 if not early_exit_lidar.training:
                     decision_list.append(decision.item())
                     if decision.item() == 0:

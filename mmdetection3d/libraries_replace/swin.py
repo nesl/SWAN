@@ -2,7 +2,7 @@
 import warnings
 from collections import OrderedDict
 from copy import deepcopy
-
+import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -498,21 +498,12 @@ class SwinBlockSequence(BaseModule):
             # Retained layer list can either be controller decided (B_size, N), or (1, N) for ordinary layerdrop
             
             if early_exit_training or (early_exit_camera is not None and not self.training and retained_layer_list[0][i]):
-                
                 raw_logits = early_exit_camera(x, self.index_lookup[block_start_layer + i], 
                                                remaining_layer_count,
                                                retained_layer_list[:, i],
                                                predicted_noise=predicted_noise,
                                                lidar_alloc=lidar_alloc)[:, 0] # Weird shape, don't want to squeeze
-                # start = torch.cuda.Event(enable_timing=True)
-                # end = torch.cuda.Event(enable_timing=True)
-                # start.record()
-                # # x_new = block(x, hw_shape)
-                # end.record()
-                # torch.cuda.synchronize()
-                # print(start.elapsed_time(end))
-                # for layer_idx in range(len(remaining_layer_count)):
-                #     remaining_layer_count[layer_idx] -= retained_layer_list[:, i].int().detach()[layer_idx].item()
+                
                 with torch.no_grad():
                     remaining_layer_count -= torch.round(retained_layer_list[:, i].detach())
 
@@ -522,11 +513,11 @@ class SwinBlockSequence(BaseModule):
                 if early_exit_camera.training:
                     message_hub = MessageHub.get_current_instance()
                     current_epoch = message_hub.get_info('epoch') + 1
-                
-                # Outputted binary decision
-                decision = _gumbel_sigmoid(raw_logits, training=early_exit_camera.training, tau=max(1/(2 * current_epoch), 0.05), hard=not early_exit_camera.training) # b_size
-
+                    decision = _gumbel_sigmoid(raw_logits, training=False, tau=max(0.25/current_epoch, 0.05), hard=False) # b_size
+                else:
+                    decision = (raw_logits > 0).int()
                 decision_list.append(decision[0].item())
+                
                 
                 # Ignore this layer during inference
                 if not early_exit_camera.training:

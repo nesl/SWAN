@@ -1,6 +1,7 @@
 from .cmt_head import *
 from .cmt_old import CmtOldDetector
 from .cmt import *
+from .cmt_compiled import CmtDetectorCompiled
 from .cp_fpn import *
 from .flatformer import FlatFormer
 from .layer_controller import ConvLayerController, UniversalConvLayerController, UniversalConvLayerControllerCompile

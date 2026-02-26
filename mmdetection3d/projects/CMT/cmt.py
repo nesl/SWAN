@@ -180,7 +180,7 @@ class CmtDetector(MVXTwoStageDetector):
             'full': 0.0,
             'count': 0
         }
-
+        torch.set_float32_matmul_precision('high')
         if self.with_img_backbone:
             self.test_img_retained_layers = torch.tensor(test_img_retained_layers) if test_img_retained_layers is not None else torch.ones(self.img_backbone.total_depth)
         if self.with_pts_backbone:
@@ -457,7 +457,6 @@ class CmtDetector(MVXTwoStageDetector):
 
             points_mask = points_mask + (points_mask_truncated - points_mask).detach()
             img_mask = img_mask + (img_mask_truncated - img_mask).detach()
-            
             # Both of these are wrapped in a one elem list
             pts_feats[0] = points_mask * pts_feats[0]
             img_feats = [img_mask * img_feats[0]]
@@ -482,8 +481,8 @@ class CmtDetector(MVXTwoStageDetector):
         if self.enable_pruning:
             #L1 sparsity, masks already binary
             # We see a large-ish drop in performance, change to divide by 3 to encourage keeping accuracy
-            losses_pts['img_mask_loss'] = torch.mean(img_mask) / 3
-            losses_pts['pts_mask_loss'] = torch.mean(points_mask) / 3
+            losses_pts['img_mask_loss'] = torch.mean(img_mask) / 1.5
+            losses_pts['pts_mask_loss'] = torch.mean(points_mask) / 1.5
         losses.update(losses_pts)
         return losses
 
@@ -516,8 +515,12 @@ class CmtDetector(MVXTwoStageDetector):
                 contains a tensor with shape (num_instances, 7).
         """
         if self.timing_stats['count'] == 1:
-            self.early_exit_lidar = torch.compile(self.early_exit_lidar, mode="reduce-overhead").eval()
-            self.early_exit_camera = torch.compile(self.early_exit_camera, mode="reduce-overhead").eval()
+            if self.early_exit_lidar is not None:
+                self.early_exit_lidar = torch.compile(self.early_exit_lidar, mode="reduce-overhead").eval()
+            if self.early_exit_camera is not None:
+                self.early_exit_camera = torch.compile(self.early_exit_camera, mode="reduce-overhead").eval()
+
+        torch.cuda.synchronize()
         start = time.perf_counter()
 
         batch_input_metas = [item.metainfo for item in batch_data_samples]
@@ -531,6 +534,8 @@ class CmtDetector(MVXTwoStageDetector):
         if self.enable_pruning:
             points_mask = (self.lidar_pruner(pts_feats[0]) + self.mask_bias_value).round()
             img_mask = (self.img_pruner(img_feats[0]) + self.mask_bias_value).round()
+            # print("Points_Mask", torch.mean(points_mask))
+            # print("Img_Mask", torch.mean(img_mask))
             pts_feats[0] = points_mask * pts_feats[0]
             img_feats = [img_mask * img_feats[0]]
 
@@ -542,11 +547,11 @@ class CmtDetector(MVXTwoStageDetector):
         bbox_list = self.pts_bbox_head.get_bboxes(outs, batch_input_metas, rescale=False)
         torch.cuda.synchronize()
         elapsed = time.perf_counter() - start
-        # print("Elapsed:", elapsed)
+        print("Elapsed:", elapsed)
         self.timing_stats['count'] += 1
         
-        # if self.timing_stats['count'] == 4449:
-        #     sys.exit(0)
+        if self.timing_stats['count'] == 4449:
+            sys.exit(0)
 
         return self.add_pred_to_datasample(batch_data_samples, bbox_list)
 

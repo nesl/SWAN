@@ -47,8 +47,14 @@ def calculate_average_utilization(file_path):
     return avg_lidar, avg_image, num_samples
 
 # Usage:
-path = "/workspace/mmdetection3d/work_dirs/EE_Universal_test_16_lidar_motionblur.txt"
-avg_l, avg_i, total = calculate_average_utilization(path)
-print(f"Processed {total} samples.")
-print(f"Average Lidar Utilization: {avg_l:.2f} / 8.0")
-print(f"Average Image Utilization: {avg_i:.2f} / 12.0")
+import os
+
+for path in sorted(os.listdir('./work_dirs/ECCV_EE_Controller_GoodButLatency')):
+    file_path = './work_dirs/ECCV_EE_Controller_GoodButLatency/' + path
+    if file_path[-4:] != '.txt':
+        continue
+    avg_l, avg_i, total = calculate_average_utilization(file_path)
+    print(path)
+    print(f"\tProcessed {total} samples.")
+    print(f"\tAverage Lidar Utilization: {avg_l:.2f} / 8.0")
+    print(f"\tAverage Image Utilization: {avg_i:.2f} / 12.0")
