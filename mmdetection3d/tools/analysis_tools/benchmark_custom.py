@@ -71,14 +71,10 @@ def main():
     # benchmark with several samples and take the average
 
     for i, data in enumerate(dataloader):
-        torch.cuda.synchronize()
-        start_time = time.perf_counter()
 
         with autocast(enabled=args.amp):
             model.test_step(data)
 
-        torch.cuda.synchronize()
-        elapsed = time.perf_counter() - start_time
 
         if i >= num_warmup:
             pure_inf_time += elapsed

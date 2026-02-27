@@ -240,7 +240,7 @@ class BasicBlock(nn.Module):
     def forward(self, x: torch.Tensor, pe: torch.Tensor, mappings: Dict[str, Any], 
                 retained_layer_list=None, controller_training=False, early_exit_lidar=None,
                   losses=None, block_layer_start=0, remaining_layer_count=None,
-                  predicted_noise=None, camera_alloc=None) -> torch.Tensor:
+                  noise_embed=None, camera_alloc=None) -> torch.Tensor:
         # Run through the four basic layers while performing shift and sort operations
         decision_list = []
         logits_list = []
@@ -248,9 +248,8 @@ class BasicBlock(nn.Module):
         for k, name in enumerate(["x", "x_shift", "y", "y_shift"]):
 
             indices = mappings[name]
-            # If we are training early exit, or if we are testing with early_exit_enabled and controller specifically activates this layer (bsize 1)
+            #If we are training early exit, or if we are testing with early_exit_enabled and controller specifically activates this layer (bsize 1)
             if early_exit_training or (early_exit_lidar is not None and not self.training and retained_layer_list[0][k]):
-                
                 if self.training:
                     lidar_feature = x[indices]
                     lengths = [mappings['batch_start_indices'][i+1] - mappings['batch_start_indices'][i] for i in range(len(mappings['batch_start_indices']) - 1)]
@@ -263,7 +262,7 @@ class BasicBlock(nn.Module):
 
                 raw_logits = early_exit_lidar(aggregated_tensor, l_count_tensor, 
                                               remaining_layer_count, 
-                                              retained_layer_list[:, k], predicted_noise=predicted_noise,
+                                              retained_layer_list[:, k], noise_embed=noise_embed,
                                               camera_alloc=camera_alloc)
                 
                 
@@ -276,7 +275,7 @@ class BasicBlock(nn.Module):
                 if early_exit_lidar.training:
                     message_hub = MessageHub.get_current_instance()
                     current_epoch = message_hub.get_info('epoch') + 1
-                    decision = torch.squeeze(_gumbel_sigmoid(raw_logits, training=False, tau=max(0.25/current_epoch, 0.05), hard=False)) # b_size x 1
+                    decision = torch.squeeze(_gumbel_sigmoid(raw_logits, training=True, tau=max(4/current_epoch, 0.05), hard=False)) # b_size x 1
                 else:
                     decision = (raw_logits > 0).int()
                 # Ignore this layer during inference
@@ -292,11 +291,9 @@ class BasicBlock(nn.Module):
             # If retained_layer_list does not exist OR is 1 OR controller training is active, run that particular layer
             # During normal layerdrop training and all inference retained_layer_list has tensor shape [1, 8]
             if controller_training or early_exit_training or retained_layer_list is None or retained_layer_list[0][k]:
-
                 x_new = self.block[k](x[indices][mappings["flat2win"]], pe[indices][mappings["flat2win"]])[
                     mappings["win2flat"]
                 ]
-
                 # If we are doing controller training, then retained_layer_list is going to be B x 12 as it is lidar
                 if controller_training or early_exit_training:
                     across_batch_mask = retained_layer_list[:, k]
@@ -314,9 +311,9 @@ class BasicBlock(nn.Module):
                     x[indices] = x[indices] * (1 - expanded_mask) + x_new * expanded_mask
                 else:
                     x[indices] = x_new
-        # if get_dist_info()[0] == 0 and early_exit_lidar is not None:
-        #     print("Lidar Logits List", logits_list)
-        #     print("Lidar Decision List", decision_list)
+        if get_dist_info()[0] == 0 and early_exit_lidar is not None:
+            print("Lidar Logits List", logits_list)
+            print("Lidar Decision List", decision_list)
         return x
 
 
@@ -521,7 +518,7 @@ class FlatFormer(nn.Module):
         self.output_shape = output_shape
 
     # Added LayerDropping Logic
-    def forward(self, x, coords, batch_size, retained_layer_list=None, controller_training=False, early_exit_lidar=None, losses=None, predicted_noise=None, camera_alloc=None):
+    def forward(self, x, coords, batch_size, retained_layer_list=None, controller_training=False, early_exit_lidar=None, losses=None, noise_embed=None, camera_alloc=None):
 
         pe = self.embedding(coords, x.dtype)
         mappings = self.mapping(coords, batch_size)
@@ -538,7 +535,7 @@ class FlatFormer(nn.Module):
                 stage_layer_list = retained_layer_list[:, i*4:(i+1) * 4]
             x = block(x, pe, mappings, stage_layer_list, controller_training, early_exit_lidar, 
                       losses=losses, block_layer_start=i * 4, remaining_layer_count = remaining_layer_count,
-                      predicted_noise=predicted_noise, camera_alloc=camera_alloc)
+                      noise_embed=noise_embed, camera_alloc=camera_alloc)
         # start = torch.cuda.Event(enable_timing=True)
         # end = torch.cuda.Event(enable_timing=True)
         # start.record()

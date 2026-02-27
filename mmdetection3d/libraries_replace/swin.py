@@ -487,23 +487,23 @@ class SwinBlockSequence(BaseModule):
     # list of 0, 1's where 0 means a layer is dropped and 1 is layer is kept
     def forward(self, x, hw_shape, retained_layer_list=None, controller_training=False, 
                 early_exit_camera=None, losses=None, block_start_layer=0, 
-                remaining_layer_count=None, predicted_noise=None, lidar_alloc=None):
+                remaining_layer_count=None, noise_embed=None, lidar_alloc=None):
         decision_list = []
         logits_list = []
 
         early_exit_training = early_exit_camera is not None and early_exit_camera.training
-
+        
         for i, block in enumerate(self.blocks):
             # If list does not exist OR and the value is 1 OR controller is training
             # Retained layer list can either be controller decided (B_size, N), or (1, N) for ordinary layerdrop
-            
             if early_exit_training or (early_exit_camera is not None and not self.training and retained_layer_list[0][i]):
+                
                 raw_logits = early_exit_camera(x, self.index_lookup[block_start_layer + i], 
                                                remaining_layer_count,
                                                retained_layer_list[:, i],
-                                               predicted_noise=predicted_noise,
+                                               noise_embed=noise_embed,
                                                lidar_alloc=lidar_alloc)[:, 0] # Weird shape, don't want to squeeze
-                
+    
                 with torch.no_grad():
                     remaining_layer_count -= torch.round(retained_layer_list[:, i].detach())
 
@@ -513,7 +513,7 @@ class SwinBlockSequence(BaseModule):
                 if early_exit_camera.training:
                     message_hub = MessageHub.get_current_instance()
                     current_epoch = message_hub.get_info('epoch') + 1
-                    decision = _gumbel_sigmoid(raw_logits, training=False, tau=max(0.25/current_epoch, 0.05), hard=False) # b_size
+                    decision = _gumbel_sigmoid(raw_logits, training=True, tau=max(4/current_epoch, 0.05), hard=False) # b_size
                 else:
                     decision = (raw_logits > 0).int()
                 decision_list.append(decision[0].item())
@@ -542,9 +542,9 @@ class SwinBlockSequence(BaseModule):
                 else:
                     x = x_new
 
-        # if get_dist_info()[0] == 0 and early_exit_camera is not None:
-        #     print("Image Early Exit Logits", logits_list)
-        #     print("Image Early Exit Decisions", decision_list)
+        if get_dist_info()[0] == 0 and early_exit_camera is not None:
+            print("Image Early Exit Logits", logits_list)
+            print("Image Early Exit Decisions", decision_list)
         if self.downsample:
             x_down, down_hw_shape = self.downsample(x, hw_shape)
             return x_down, down_hw_shape, x, hw_shape
@@ -832,7 +832,7 @@ class SwinTransformer(BaseModule):
             # load state_dict
             self.load_state_dict(state_dict, False)
 
-    def forward(self, x, retained_layer_list=None, controller_training=False, early_exit_camera=None, losses=None, predicted_noise=None, lidar_alloc=None):
+    def forward(self, x, retained_layer_list=None, controller_training=False, early_exit_camera=None, losses=None, noise_embed=None, lidar_alloc=None):
         x, hw_shape = self.patch_embed(x)
 
         if self.use_abs_pos_embed:
@@ -845,7 +845,6 @@ class SwinTransformer(BaseModule):
             remaining_layer_count=torch.full((x.shape[0]//6, ), 12, device=x.device)
             if early_exit_camera is not None:
                 remaining_layer_count = torch.round(torch.sum(retained_layer_list, dim=-1)).int().detach()
-    
         for i, stage in enumerate(self.stages):
             stage_layer_list = None
             if retained_layer_list is not None:
@@ -857,7 +856,7 @@ class SwinTransformer(BaseModule):
                                                    controller_training, early_exit_camera=early_exit_camera,
                                                      losses=losses, block_start_layer=current_layer-len(stage.blocks), 
                                                      remaining_layer_count=remaining_layer_count,
-                                                     predicted_noise=predicted_noise,
+                                                     noise_embed=noise_embed,
                                                      lidar_alloc=lidar_alloc)
 
             if i in self.out_indices:

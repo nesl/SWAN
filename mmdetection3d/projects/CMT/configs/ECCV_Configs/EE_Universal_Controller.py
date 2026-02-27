@@ -2,10 +2,10 @@ _base_=['./Universal_Controller_cmt_voxel_015_flatformer_swin_multicorrupt.py']
 
 model=dict(
     lidar_early_exit_model=dict(
-        type='Early_Exit_Lidar'
+        type='Early_Exit_Lidar_Mean'
     ),
     camera_early_exit_model=dict(
-        type='Early_Exit_Camera'
+        type='Early_Exit_Camera_Mean'
     )
 )
 
