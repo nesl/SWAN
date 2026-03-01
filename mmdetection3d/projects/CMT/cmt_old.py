@@ -397,9 +397,8 @@ class CmtOldDetector(MVXTwoStageDetector):
             - bbox_3d (:obj:`BaseInstance3DBoxes`): Prediction of bboxes,
                 contains a tensor with shape (num_instances, 7).
         """
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
+        torch.cuda.synchronize()
+        start = time.perf_counter()
 
         batch_input_metas = [item.metainfo for item in batch_data_samples]
 
@@ -423,10 +422,8 @@ class CmtOldDetector(MVXTwoStageDetector):
         
 
         bbox_list = self.pts_bbox_head.get_bboxes(outs, batch_input_metas, rescale=False)
-        end.record()
         torch.cuda.synchronize()
-        with open('full_model_latency.txt', 'a') as handle:
-            print("Elapsed:", start.elapsed_time(end), file=handle)
+        print("Elapsed:", time.perf_counter() - start)
         return self.add_pred_to_datasample(batch_data_samples, bbox_list)
 
 

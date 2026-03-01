@@ -403,7 +403,30 @@ val_dataloader = dict(
         test_mode=True,
         box_type_3d='LiDAR',
         backend_args=backend_args))
-test_dataloader = val_dataloader
+
+test_dataloader = dict(
+    batch_size=1,
+    num_workers=4,
+    persistent_workers=True,
+    drop_last=False,
+    sampler=dict(type='DefaultSampler', shuffle=False),
+    dataset=dict(
+        type='NuScenesCorruptDiverseSplitDataset',
+        data_root=data_root,
+        ann_file='nuscenes_infos_val.pkl',
+        pipeline=test_pipeline,
+        metainfo=metainfo,
+        modality=input_modality,
+        test_mode=True,
+        data_prefix=data_prefix,
+        corruptions=corruptions,
+        corruption_root=corruption_root,
+        use_valid_flag=True,
+        return_corruption_info = True,
+        split='day_dry',
+        # we use box_type_3d='LiDAR' in kitti and nuscenes dataset
+        # and box_type_3d='Depth' in sunrgbd and scannet dataset.
+        box_type_3d='LiDAR'))
 
 val_evaluator = dict(
     type='NuScenesMetric',
@@ -411,7 +434,13 @@ val_evaluator = dict(
     ann_file=data_root + 'nuscenes_infos_val.pkl',
     metric='bbox',
     backend_args=backend_args)
-test_evaluator = val_evaluator
+test_evaluator = dict(
+    type='NuScenesPartialMetric',
+    data_root=data_root,
+    split='day_dry',
+    ann_file=data_root + 'nuscenes_infos_val.pkl',
+    metric='bbox',
+    backend_args=backend_args)
 
 vis_backends = [dict(type='LocalVisBackend')]
 visualizer = dict(

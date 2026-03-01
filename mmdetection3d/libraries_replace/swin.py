@@ -492,42 +492,58 @@ class SwinBlockSequence(BaseModule):
         logits_list = []
 
         early_exit_training = early_exit_camera is not None and early_exit_camera.training
-        
+        rounded_layer_list = torch.round(retained_layer_list.detach())
         for i, block in enumerate(self.blocks):
             # If list does not exist OR and the value is 1 OR controller is training
             # Retained layer list can either be controller decided (B_size, N), or (1, N) for ordinary layerdrop
-            if early_exit_training or (early_exit_camera is not None and not self.training and retained_layer_list[0][i]):
-                
-                raw_logits = early_exit_camera(x, self.index_lookup[block_start_layer + i], 
-                                               remaining_layer_count,
-                                               retained_layer_list[:, i],
-                                               noise_embed=noise_embed,
-                                               lidar_alloc=lidar_alloc)[:, 0] # Weird shape, don't want to squeeze
-    
-                with torch.no_grad():
-                    remaining_layer_count -= torch.round(retained_layer_list[:, i].detach())
+            # if early_exit_training or (early_exit_camera is not None and not self.training):
+            #     pass
+            # if early_exit_training or (early_exit_camera is not None and not self.training and retained_layer_list[0][i]):
+            #     pass
+          # Weird shape, don't want to squeeze
 
-                logits_list.append(raw_logits[0].item()) # Append batch 1
+                # with torch.no_grad():
+                #     remaining_layer_count -= torch.round(retained_layer_list[:, i].detach())
 
-                current_epoch = 1
-                if early_exit_camera.training:
-                    message_hub = MessageHub.get_current_instance()
-                    current_epoch = message_hub.get_info('epoch') + 1
-                    decision = _gumbel_sigmoid(raw_logits, training=True, tau=max(4/current_epoch, 0.05), hard=False) # b_size
-                else:
-                    decision = (raw_logits > 0).int()
-                decision_list.append(decision[0].item())
+                # #logits_list.append(raw_logits[0].item()) # Append batch 1
+
+                # current_epoch = 1
+                # if early_exit_camera.training:
+                #     message_hub = MessageHub.get_current_instance()
+                #     current_epoch = message_hub.get_info('epoch') + 1
+                #     decision = _gumbel_sigmoid(raw_logits, training=True, tau=max(4/current_epoch, 0.05), hard=False) # b_size
+                # else:
+                #     decision = (raw_logits > 0).int()
+                # #decision_list.append(decision[0].item())
                 
                 
-                # Ignore this layer during inference
-                if not early_exit_camera.training:
-                    if decision[0].item() == 0:
+                # # Ignore this layer during inference
+                # if not early_exit_camera.training:
+                #     if decision[0].item() == 0:
+                #         continue
+
+            if retained_layer_list is None or retained_layer_list[0][i] or controller_training or early_exit_training:
+                batch_selected_layers = retained_layer_list[:, i]
+                if early_exit_camera is not None:
+                    raw_logits = early_exit_camera(x, self.index_lookup[block_start_layer + i], 
+                                        remaining_layer_count,
+                                        batch_selected_layers,
+                                        noise_embed=noise_embed,
+                                        lidar_alloc=lidar_alloc)
+                    with torch.no_grad():
+                        remaining_layer_count -= rounded_layer_list[:, i]
+                    if not early_exit_training and raw_logits[0][0] < 0:
+                        # decision_list.append((raw_logits[0][0] > 0).int().item())
                         continue
-
-            if controller_training or early_exit_training or retained_layer_list is None or retained_layer_list[0][i]:
+                    elif early_exit_training:
+                        current_epoch = 1
+                        message_hub = MessageHub.get_current_instance()
+                        current_epoch = message_hub.get_info('epoch') + 1
+                        decision = torch.squeeze(_gumbel_sigmoid(raw_logits, training=True, tau=max(4/current_epoch, 0.05), hard=False)) # b_size x 1
+                        if decision.ndim != 0:
+                            decision_list.append(decision[0].item())
                 x_new = block(x, hw_shape)
                 if controller_training or early_exit_training:
-                    batch_selected_layers = retained_layer_list[:, i]
                     # Multiply controller output by the early-exit decision
                     if early_exit_camera is not None:
                         batch_selected_layers = batch_selected_layers * decision
@@ -542,9 +558,9 @@ class SwinBlockSequence(BaseModule):
                 else:
                     x = x_new
 
-        if get_dist_info()[0] == 0 and early_exit_camera is not None:
-            print("Image Early Exit Logits", logits_list)
-            print("Image Early Exit Decisions", decision_list)
+        # if get_dist_info()[0] == 0 and early_exit_camera is not None:
+        #     print("Image Early Exit Logits", logits_list)
+        #     print("Image Early Exit Decisions", decision_list)
         if self.downsample:
             x_down, down_hw_shape = self.downsample(x, hw_shape)
             return x_down, down_hw_shape, x, hw_shape

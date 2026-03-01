@@ -175,19 +175,16 @@ class Early_Exit_Camera_Mean(nn.Module):
         self.register_buffer('sinusoidal_embeds', embeds)
     # We assume 320 x 800 images
     def forward(self, swin_feature, l_count_tensor, remaining_layer_count, retained_layer_list, noise_embed, lidar_alloc):
+        noise_embed = self.noise_proj(noise_embed)
         _, N, D = swin_feature.shape
         swin_feature = torch.reshape(swin_feature, (-1, 6 * N, D))
         B_size = swin_feature.shape[0]
-
         condensed_embed = torch.mean(torch.transpose(swin_feature, 1, 2), dim=-1)[..., :64]
-        
         lidar_alloc = self.sinusoidal_embeds[lidar_alloc.int()]
-        
-        controller_decision = (retained_layer_list.detach() * 2 - 1).unsqueeze(-1).expand(-1, self.embed_dim//2)
         l_idx = l_count_tensor.view(1).expand(B_size)
         layer_cls = self.sinusoidal_embeds[l_idx]
         remaining_embed = self.sinusoidal_embeds[remaining_layer_count.int()]
-        noise_embed = self.noise_proj(noise_embed)
+        controller_decision = (retained_layer_list.detach() * 2 - 1).unsqueeze(-1).expand(-1, self.embed_dim//2)
         condensed_embed = torch.cat((condensed_embed, lidar_alloc, noise_embed, layer_cls, controller_decision, remaining_embed), dim=-1) # incorporate layer info
         output = 3 * torch.tanh(self.output_head(condensed_embed))
        
@@ -207,13 +204,15 @@ class Early_Exit_Lidar_Mean(nn.Module):
         )
         self.noise_proj = nn.Linear(256, 64)
     def forward(self, aggregated_tensor, l_count_tensor, remaining_layer_count, retained_layer_list, noise_embed, camera_alloc):
+        noise_embed = self.noise_proj(noise_embed)
         condensed_embed = torch.mean(torch.transpose(aggregated_tensor, 1, 2), dim=-1)[..., :64]
+        
         camera_alloc = self.sinusoidal_embeds[camera_alloc.int()] # What did the other mod pick?
-        controller_decision = (retained_layer_list.detach() * 2 - 1).unsqueeze(-1).expand(-1, self.embed_dim//2)
         l_idx = l_count_tensor.view(1).expand(condensed_embed.shape[0])
         layer_cls = self.sinusoidal_embeds[l_idx]
         remaining_embed = self.sinusoidal_embeds[remaining_layer_count.int()]
-        noise_embed = self.noise_proj(noise_embed)
+
+        controller_decision = (retained_layer_list.detach() * 2 - 1).unsqueeze(-1).expand(-1, self.embed_dim//2)
         condensed_embed = torch.cat((condensed_embed, camera_alloc, noise_embed, layer_cls, controller_decision, remaining_embed), dim=-1) # incorporate layer info
         return 3 * torch.tanh(self.output_head(condensed_embed))
 

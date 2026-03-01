@@ -39,8 +39,8 @@ def calculate_average(file_path):
 
 # calculate_average(f'Results_Latencies/Latencies_Flash_Attn_Append/Latency_naive_camera_fog_16.txt')
 # calculate_average(f'Results_Latencies/Latencies_Flash_Attn_Append/Latency_EE_camera_fog_16.txt')
-# # calculate_average(f'Latency_naive_camera_fog_16.txt')
-# # # calculate_average(f'Latency_controller_camera_fog_4.txt')
-calculate_average(f'controller_same_as_naive.txt')
-calculate_average(f'naive_same_as_controller.txt')
-# print(calculate_average('Results_Latencies/New_Latencies_Flash_Attn/Latency_EE_camera_fog_16.txt'))
+# corr='beamsreducing'
+# budget='8'
+# print(calculate_average(f'Latency_naive_{corr}_{budget}.txt'))
+# print(calculate_average(f'Latency_controller_{corr}_{budget}.txt'))
+# print(calculate_average(f'Latency_EE_{corr}_{budget}.txt'))

@@ -375,9 +375,9 @@ class CmtDetector(MVXTwoStageDetector):
             # Add the cross_entropy corruption prediction loss
             if losses is not None and self.controller.training:
                 losses['noise_pred_loss'] = nn.functional.cross_entropy(predicted_categories, gt_corruption_labels.cuda())
-            if get_dist_info()[0] == 0:
-                print("Gt_corruption_labels", gt_corruption_labels[0])
-                print('Predicted Noise', predicted_categories[0])
+            # if get_dist_info()[0] == 0:
+            #     print("Gt_corruption_labels", gt_corruption_labels[0])
+            #     print('Predicted Noise', predicted_categories[0])
         else: # If we are not doing controller training
             pts_feats = self.extract_pts_feat(
                 voxel_features=voxel_features,
@@ -517,8 +517,8 @@ class CmtDetector(MVXTwoStageDetector):
             if self.early_exit_camera is not None:
                 self.early_exit_camera = torch.compile(self.early_exit_camera, mode="reduce-overhead").eval()
 
-        # torch.cuda.synchronize()
-        # start = time.perf_counter()
+        torch.cuda.synchronize()
+        start = time.perf_counter()
 
         batch_input_metas = [item.metainfo for item in batch_data_samples]
 
@@ -542,13 +542,13 @@ class CmtDetector(MVXTwoStageDetector):
             outs = self.pts_bbox_head(pts_feats, img_feats, batch_input_metas)
 
         bbox_list = self.pts_bbox_head.get_bboxes(outs, batch_input_metas, rescale=False)
-        # torch.cuda.synchronize()
-        # elapsed = time.perf_counter() - start
-        # print("Elapsed:", elapsed)
+        torch.cuda.synchronize()
+        elapsed = time.perf_counter() - start
+        print("Elapsed:", elapsed)
         self.timing_stats['count'] += 1
         
-        # if self.timing_stats['count'] == 4449:
-        #     sys.exit(0)
+        if self.timing_stats['count'] == 4449:
+            sys.exit(0)
 
         return self.add_pred_to_datasample(batch_data_samples, bbox_list)
 

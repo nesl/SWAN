@@ -14,7 +14,7 @@ from mmdet3d.registry import MODELS
 from mmdet3d.structures import Det3DDataSample
 from mmdet3d.utils import OptConfigType, OptMultiConfig, OptSampleList
 from .ops import Voxelization
-
+import time
 
 @MODELS.register_module()
 class BEVFusion(Base3DDetector):
@@ -237,13 +237,17 @@ class BEVFusion(Base3DDetector):
         """
         
         batch_input_metas = [item.metainfo for item in batch_data_samples]
+
+        torch.cuda.synchronize()
+        start = time.perf_counter()
         feats = self.extract_feat(batch_inputs_dict, batch_input_metas)
 
         if self.with_bbox_head:
             outputs = self.bbox_head.predict(feats, batch_input_metas)
         
         res = self.add_pred_to_datasample(batch_data_samples, outputs)
-
+        torch.cuda.synchronize()
+        print(time.perf_counter() - start)
         return res
 
     def extract_feat(

@@ -425,7 +425,7 @@ class ADMNConvLayerController(nn.Module):
             #     print('Logits Image:', logits[0][flatformer_layers:])
             #     print('LiDAR:', discretized[0][:flatformer_layers])
             #     print('Image:',  discretized[0][flatformer_layers:])
-            return gumbel_samples + (discretized - gumbel_samples).detach(), predicted_noise
+            return gumbel_samples + (discretized - gumbel_samples).detach(), predicted_noise, joint_embed
         else:
             raise Exception('Invalid discretization')
         
@@ -616,11 +616,11 @@ class UniversalConvLayerController(nn.Module):
                     weights = get_top_k(logits, k=current_budget, zero_value=0)
             # weights[:, 0] = 1 # Set the first layer to always chosen
             # weights[:, flatformer_layers] = 1
-            if get_dist_info()[0] == 0:
-                print('\nController LiDAR Logits:', logits[0][:flatformer_layers])
-                print('Controller Image Logits:', logits[0][flatformer_layers:])
-                print('Controller LiDAR', weights[0][:flatformer_layers])
-                print('Controller Image', weights[0][flatformer_layers:])
+            # if get_dist_info()[0] == 0:
+            #     print('\nController LiDAR Logits:', logits[0][:flatformer_layers])
+            #     print('Controller Image Logits:', logits[0][flatformer_layers:])
+            #     print('Controller LiDAR', weights[0][:flatformer_layers])
+            #     print('Controller Image', weights[0][flatformer_layers:])
             return weights, predicted_noise, joint_embed
         else:
             raise Exception('Invalid discretization')

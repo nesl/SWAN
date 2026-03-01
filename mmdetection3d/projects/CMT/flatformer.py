@@ -142,8 +142,8 @@ class GroupAttention(nn.Module):
     def __init__(self, in_channels: int, num_heads: int, group_size: int) -> None:
         super().__init__()
         self.group_size = group_size
-        self.attn = FlashAttention(in_channels, num_heads)
-        #self.attn = OrdinaryMultiHeadAttn(in_channels, num_heads)
+        # self.attn = FlashAttention(in_channels, num_heads)
+        self.attn = OrdinaryMultiHeadAttn(in_channels, num_heads)
 
     def forward(self, x, pe):
         size = x.shape[0]
@@ -245,52 +245,43 @@ class BasicBlock(nn.Module):
         decision_list = []
         logits_list = []
         early_exit_training = early_exit_lidar is not None and early_exit_lidar.training
+        rounded_layer_list = torch.round(retained_layer_list.detach())
         for k, name in enumerate(["x", "x_shift", "y", "y_shift"]):
 
-            indices = mappings[name]
-            #If we are training early exit, or if we are testing with early_exit_enabled and controller specifically activates this layer (bsize 1)
-            if early_exit_training or (early_exit_lidar is not None and not self.training and retained_layer_list[0][k]):
-                if self.training:
-                    lidar_feature = x[indices]
-                    lengths = [mappings['batch_start_indices'][i+1] - mappings['batch_start_indices'][i] for i in range(len(mappings['batch_start_indices']) - 1)]
-                    voxel_batches = torch.split(lidar_feature, lengths)
-                    voxel_batches = [pad_or_truncate(v) for v in voxel_batches]
-                    aggregated_tensor = torch.stack(voxel_batches, dim=0)
-                else:
-                    aggregated_tensor = pad_or_truncate(x[indices]).unsqueeze(0)
-                l_count_tensor = self.index_lookup[block_layer_start + k]
-
-                raw_logits = early_exit_lidar(aggregated_tensor, l_count_tensor, 
-                                              remaining_layer_count, 
-                                              retained_layer_list[:, k], noise_embed=noise_embed,
-                                              camera_alloc=camera_alloc)
-                
-                
-                with torch.no_grad():
-                    remaining_layer_count -= torch.round(retained_layer_list[:, k].detach())
-
-                logits_list.append(raw_logits[0][0].item())
-
-                current_epoch = 1
-                if early_exit_lidar.training:
-                    message_hub = MessageHub.get_current_instance()
-                    current_epoch = message_hub.get_info('epoch') + 1
-                    decision = torch.squeeze(_gumbel_sigmoid(raw_logits, training=True, tau=max(4/current_epoch, 0.05), hard=False)) # b_size x 1
-                else:
-                    decision = (raw_logits > 0).int()
-                # Ignore this layer during inference
-                
-                if not early_exit_lidar.training:
-                    decision_list.append(decision.item())
-                    if decision.item() == 0:
-                        continue    
-                else:
-                    if decision.ndim != 0:
-                        decision_list.append(decision[0].item())
+            indices = mappings[name]   
 
             # If retained_layer_list does not exist OR is 1 OR controller training is active, run that particular layer
             # During normal layerdrop training and all inference retained_layer_list has tensor shape [1, 8]
-            if controller_training or early_exit_training or retained_layer_list is None or retained_layer_list[0][k]:
+            if retained_layer_list is None or retained_layer_list[0][k] or controller_training or early_exit_training :
+                if early_exit_lidar is not None:
+                    if early_exit_lidar.training:
+                        lidar_feature = x[indices]
+                        lengths = [mappings['batch_start_indices'][i+1] - mappings['batch_start_indices'][i] for i in range(len(mappings['batch_start_indices']) - 1)]
+                        voxel_batches = torch.split(lidar_feature, lengths)
+                        voxel_batches = [pad_or_truncate(v) for v in voxel_batches]
+                        aggregated_tensor = torch.stack(voxel_batches, dim=0)
+                    else:
+                        aggregated_tensor = pad_or_truncate(x[indices]).unsqueeze(0)
+
+                    l_count_tensor = self.index_lookup[block_layer_start + k]
+                    raw_logits = early_exit_lidar(aggregated_tensor, l_count_tensor, 
+                                                remaining_layer_count, 
+                                                retained_layer_list[:, k], noise_embed=noise_embed,
+                                                camera_alloc=camera_alloc)
+                    with torch.no_grad():
+                        remaining_layer_count -= rounded_layer_list[:, k]
+                    #logits_list.append(raw_logits[0][0].)
+                    if not early_exit_training and raw_logits[0][0] < 0:
+                        # decision_list.append((raw_logits[0][0] > 0).int().item())
+                        continue
+                    elif early_exit_training:
+                        current_epoch = 1
+                        message_hub = MessageHub.get_current_instance()
+                        current_epoch = message_hub.get_info('epoch') + 1
+                        decision = torch.squeeze(_gumbel_sigmoid(raw_logits, training=True, tau=max(4/current_epoch, 0.05), hard=False)) # b_size x 1
+                        if decision.ndim != 0:
+                            decision_list.append(decision[0].item())
+
                 x_new = self.block[k](x[indices][mappings["flat2win"]], pe[indices][mappings["flat2win"]])[
                     mappings["win2flat"]
                 ]
@@ -311,9 +302,9 @@ class BasicBlock(nn.Module):
                     x[indices] = x[indices] * (1 - expanded_mask) + x_new * expanded_mask
                 else:
                     x[indices] = x_new
-        if get_dist_info()[0] == 0 and early_exit_lidar is not None:
-            print("Lidar Logits List", logits_list)
-            print("Lidar Decision List", decision_list)
+        # if get_dist_info()[0] == 0 and early_exit_lidar is not None:
+        #     print("Lidar Logits List", logits_list)
+        #     print("Lidar Decision List", decision_list)
         return x
 
 

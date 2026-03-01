@@ -10,7 +10,7 @@
 
 import torch
 from mmengine.structures import InstanceData
-
+import time
 from mmdet3d.models.detectors.mvx_two_stage import MVXTwoStageDetector
 from mmdet3d.registry import MODELS
 from mmdet3d.structures.ops import bbox3d2result
@@ -183,6 +183,8 @@ class PETR(MVXTwoStageDetector):
         return losses
 
     def predict(self, inputs=None, data_samples=None, mode=None, **kwargs):
+        torch.cuda.synchronize()
+        start = time.perf_counter()
         img = inputs['imgs']
         batch_img_metas = [ds.metainfo for ds in data_samples]
         for var, name in [(batch_img_metas, 'img_metas')]:
@@ -200,7 +202,8 @@ class PETR(MVXTwoStageDetector):
                 metainfo=results_list_3d[i]['pts_bbox'])
             data_sample.pred_instances_3d = results_list_3d_i
             data_sample.pred_instances = InstanceData()
-
+        torch.cuda.synchronize()
+        print("Elapsed", time.perf_counter() - start)
         return data_samples
 
     def simple_test_pts(self, x, img_metas, rescale=False):
