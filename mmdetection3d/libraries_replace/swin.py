@@ -532,14 +532,16 @@ class SwinBlockSequence(BaseModule):
                                         lidar_alloc=lidar_alloc)
                     with torch.no_grad():
                         remaining_layer_count -= rounded_layer_list[:, i]
+                    logits_list.append(raw_logits[0][0].item())
+                    if not early_exit_training:
+                        decision_list.append((raw_logits[0][0] > 0).int().item())
                     if not early_exit_training and raw_logits[0][0] < 0:
-                        # decision_list.append((raw_logits[0][0] > 0).int().item())
                         continue
                     elif early_exit_training:
                         current_epoch = 1
                         message_hub = MessageHub.get_current_instance()
                         current_epoch = message_hub.get_info('epoch') + 1
-                        decision = torch.squeeze(_gumbel_sigmoid(raw_logits, training=True, tau=max(4/current_epoch, 0.05), hard=False)) # b_size x 1
+                        decision = torch.squeeze(_gumbel_sigmoid(raw_logits, training=True, tau=max(4/(current_epoch), 0.05), hard=False)) # b_size x 1, square current epoch for real-world
                         if decision.ndim != 0:
                             decision_list.append(decision[0].item())
                 x_new = block(x, hw_shape)
@@ -549,7 +551,7 @@ class SwinBlockSequence(BaseModule):
                         batch_selected_layers = batch_selected_layers * decision
                         # We want to minimize the number of layers selected
                         if 'early_exit_loss' not in losses:
-                            losses['early_exit_loss'] = torch.mean(torch.relu(raw_logits + 2)) / 40
+                            losses['early_exit_loss'] = torch.mean(torch.relu(raw_logits + 2)) / 40 # Divide by 100 for real-world
                         else:
                             losses['early_exit_loss'] += torch.mean(torch.relu(raw_logits + 2)) / 40
 
@@ -558,9 +560,9 @@ class SwinBlockSequence(BaseModule):
                 else:
                     x = x_new
 
-        # if get_dist_info()[0] == 0 and early_exit_camera is not None:
-        #     print("Image Early Exit Logits", logits_list)
-        #     print("Image Early Exit Decisions", decision_list)
+        if get_dist_info()[0] == 0 and early_exit_camera is not None:
+            print("Image Early Exit Logits", logits_list)
+            print("Image Early Exit Decisions", decision_list)
         if self.downsample:
             x_down, down_hw_shape = self.downsample(x, hw_shape)
             return x_down, down_hw_shape, x, hw_shape

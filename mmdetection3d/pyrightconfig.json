@@ -1,0 +1,14 @@
+{
+    "exclude": [
+        "**/.*",
+        "**/node_modules",
+        "**/__pycache__",
+        "**/data",
+        "**/datasets",
+        "**/checkpoints",
+        "**/*work_dir*",
+        "**/outputs"
+    ],
+    "reportMissingImports": true,
+    "pythonPlatform": "Linux"
+}

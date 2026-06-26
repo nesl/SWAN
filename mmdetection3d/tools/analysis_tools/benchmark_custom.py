@@ -1,7 +1,7 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 import argparse
 import time
-
+import numpy as np
 import torch
 from mmengine import Config
 from mmengine.device import get_device
@@ -10,7 +10,7 @@ from mmengine.runner import Runner, autocast, load_checkpoint
 from mmengine.config import  DictAction
 from mmdet3d.registry import MODELS
 from tools.misc.fuse_conv_bn import fuse_module
-
+from torch.utils.flop_counter import FlopCounterMode
 
 def parse_args():
     parser = argparse.ArgumentParser(description='MMDet benchmark a model')
@@ -66,29 +66,29 @@ def main():
     model.eval()
 
     # the first several iterations may be very slow so skip them
-    num_warmup = 5
+    num_warmup = 50
     pure_inf_time = 0
     # benchmark with several samples and take the average
-
+    total_flops = []
     for i, data in enumerate(dataloader):
-
-        with autocast(enabled=args.amp):
-            model.test_step(data)
-
-
-        if i >= num_warmup:
-            pure_inf_time += elapsed
-            if (i + 1) % args.log_interval == 0:
-                fps = (i + 1 - num_warmup) / pure_inf_time
-                print(f'Done sample [{i + 1:<3}/ {args.samples}], '
-                      f'fps: {fps:.1f} sample / s')
-
-        if (i + 1) == args.samples:
-            pure_inf_time += elapsed
-            fps = (i + 1 - num_warmup) / pure_inf_time
-            print(f'Overall fps: {fps:.1f} sample / s')
+        if i > 550:
             break
 
+        if i > num_warmup:
+            with FlopCounterMode(display=True) as fcm:
+                with torch.no_grad():
+                    model.test_step(data)
+                total_flops.append(fcm.get_total_flops())
+        else:
+            with torch.no_grad():
+                with autocast(enabled=args.amp):
+                    model.test_step(data)
+
+
+
+        print("Average Flops", np.mean(total_flops))
+        
+    np.save('flops.npy', total_flops)
 
 if __name__ == '__main__':
     main()

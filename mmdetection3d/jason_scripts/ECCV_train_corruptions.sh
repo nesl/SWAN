@@ -2,29 +2,29 @@
 
 # # Step 1: Finetune the multimodal network on the noisy data, do this once 
 # # only for all weather conditions
-# bash tools/dist_train.sh projects/CMT/configs/Gsize_256_Configs/cmt_voxel_015_flatformer_swin_multicorrupt.py 4\
+# CUDA_VISIBLE_DEVICES=0,1,2 bash tools/dist_train.sh projects/CMT/configs/Gsize_256_Configs/cmt_voxel_015_flatformer_swin_multicorrupt.py 3 \
 #     --cfg-options load_from='/workspace/mmdetection3d/work_dirs/cmt_voxel_015_flatformer_swin_both_pretrained_group_256_unfrozen_efficientvfe/epoch_12.pth' \
-#     train_dataloader.dataset.corruptions=${CORRUPTIONS} \
-#     val_dataloader.dataset.corruptions=${CORRUPTIONS} \
 #     model.layerdrop_rate=0.2 \
 #     --work-dir ./work_dirs/cmt_train_all_corruptions
 
-# Universal controller
-# CUDA_VISIBLE_DEVICES=1,2,3 bash tools/dist_train.sh /workspace/mmdetection3d/projects/CMT/configs/ECCV_Configs/Universal_Controller_cmt_voxel_015_flatformer_swin_multicorrupt.py 3 \
+
+# # Universal controller
+# CUDA_VISIBLE_DEVICES=0,1,2 bash tools/dist_train.sh /workspace/mmdetection3d/projects/CMT/configs/ECCV_Configs/Universal_Controller_cmt_voxel_015_flatformer_swin_multicorrupt.py 3 \
 #         --work-dir "./work_dirs/ECCV_Controller_universal_model" \
 #         > "./work_dirs/ECCV_universal_controller_train.txt"
 
-# bash tools/dist_train.sh /workspace/mmdetection3d/projects/CMT/configs/ECCV_Configs/EE_Universal_Controller.py 4 \
-#         > "./work_dirs/EE_Universal_Controller_train.txt"
+CUDA_VISIBLE_DEVICES=0,1,2 bash tools/dist_train.sh /workspace/mmdetection3d/projects/CMT/configs/ECCV_Configs/EE_Universal_Controller.py 3 > "./work_dirs/EE_Universal_Controller_train.txt"
 
-bash tools/dist_train.sh /workspace/mmdetection3d/projects/CMT/configs/ECCV_Configs/Soft_Pruning_EE_Universal_Controller.py 4 \
+CUDA_VISIBLE_DEVICES=0,1,2 bash tools/dist_train.sh /workspace/mmdetection3d/projects/CMT/configs/ECCV_Configs/Soft_Pruning_EE_Universal_Controller.py 3 \
         > "./work_dirs/Soft_Pruning_EE_Universal_Controller.txt"
 
-bash tools/dist_train.sh /workspace/mmdetection3d/projects/CMT/configs/ECCV_Configs/Hard_Pruning_EE_Universal_Controller.py 4 \
+CUDA_VISIBLE_DEVICES=0,1,2 bash tools/dist_train.sh /workspace/mmdetection3d/projects/CMT/configs/ECCV_Configs/Hard_Pruning_EE_Universal_Controller.py 3 \
         > "./work_dirs/Hard_Pruning_EE_Universal_Controller.txt"
 
 
-        
+
+
+# I THINK THIS IS OLD, IGNORE
 # for LAYER_BUDGET in "${budgets[@]}"; do
 #     #Step 2: Train controller from that checkpoint
 #     bash tools/dist_train.sh /workspace/mmdetection3d/projects/CMT/configs/Gsize_256_Configs/ADMN_cmt_voxel_015_flatformer_swin_multicorrupt.py 4 \

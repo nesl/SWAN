@@ -99,7 +99,18 @@ def save_masked_grid(imgs, msk, output_path="masked_grid.png", alpha=0.5):
     # 5. Save the image
     save_image(grid, output_path)
 
-
+def save_img(imgs, path='output.png'):
+    imgs = imgs.cpu()
+    mean = torch.tensor([103.530, 116.280, 123.675])
+    std = torch.tensor([57.375, 57.120, 58.395])
+    mean = mean.view(1, 3, 1, 1)
+    std = std.view(1, 3, 1, 1)
+    imgs = imgs * std + mean
+    imgs = imgs/255
+    imgs = imgs[:, [2,1,0]]
+    test = make_grid(imgs, nrow=3, padding=2, normalize=False)
+    save_image(test, path)
+    
 
 '''
 Top level CMT model
@@ -375,9 +386,9 @@ class CmtDetector(MVXTwoStageDetector):
             # Add the cross_entropy corruption prediction loss
             if losses is not None and self.controller.training:
                 losses['noise_pred_loss'] = nn.functional.cross_entropy(predicted_categories, gt_corruption_labels.cuda())
-            # if get_dist_info()[0] == 0:
-            #     print("Gt_corruption_labels", gt_corruption_labels[0])
-            #     print('Predicted Noise', predicted_categories[0])
+            if get_dist_info()[0] == 0:
+                print("Gt_corruption_labels", gt_corruption_labels[0])
+                print('Predicted Noise', predicted_categories[0])
         else: # If we are not doing controller training
             pts_feats = self.extract_pts_feat(
                 voxel_features=voxel_features,
@@ -477,9 +488,10 @@ class CmtDetector(MVXTwoStageDetector):
         # Add additional loss for the mask
         if self.enable_pruning:
             #L1 sparsity, masks already binary
-            # We see a large-ish drop in performance, change to divide by 3 to encourage keeping accuracy
-            losses_pts['img_mask_loss'] = torch.mean(img_mask) / 1.5
+            # Was be 6 for real world
+            losses_pts['img_mask_loss'] = torch.mean(img_mask) / 1.5 
             losses_pts['pts_mask_loss'] = torch.mean(points_mask) / 1.5
+         
         losses.update(losses_pts)
         return losses
 
@@ -517,8 +529,8 @@ class CmtDetector(MVXTwoStageDetector):
             if self.early_exit_camera is not None:
                 self.early_exit_camera = torch.compile(self.early_exit_camera, mode="reduce-overhead").eval()
 
-        torch.cuda.synchronize()
-        start = time.perf_counter()
+        # torch.cuda.synchronize()
+        # start = time.perf_counter()
 
         batch_input_metas = [item.metainfo for item in batch_data_samples]
 
@@ -531,24 +543,30 @@ class CmtDetector(MVXTwoStageDetector):
         if self.enable_pruning:
             points_mask = (self.lidar_pruner(pts_feats[0]) + self.mask_bias_value).round()
             img_mask = (self.img_pruner(img_feats[0]) + self.mask_bias_value).round()
-            # print("Points_Mask", torch.mean(points_mask))
-            # print("Img_Mask", torch.mean(img_mask))
+            print("Points_Mask", torch.mean(points_mask))
+            print("Img_Mask", torch.mean(img_mask))
             pts_feats[0] = points_mask * pts_feats[0]
             img_feats = [img_mask * img_feats[0]]
-
+       
+        # sample = {'batch_inputs_dict':batch_inputs_dict, 'img_mask':img_mask, 'points_mask':points_mask}
+        # import pdb; pdb.set_trace()
         if self.use_hard_pruning:
             outs = self.pts_bbox_head(pts_feats, img_feats, batch_input_metas, img_mask=img_mask, pts_mask=points_mask)
         else:
             outs = self.pts_bbox_head(pts_feats, img_feats, batch_input_metas)
 
         bbox_list = self.pts_bbox_head.get_bboxes(outs, batch_input_metas, rescale=False)
-        torch.cuda.synchronize()
-        elapsed = time.perf_counter() - start
-        print("Elapsed:", elapsed)
-        self.timing_stats['count'] += 1
+        # torch.cuda.synchronize()
+        # elapsed = time.perf_counter() - start
+        # print("Elapsed:", elapsed)
+        # self.timing_stats['count'] += 1
+
+        # count = self.timing_stats['count']
+        # imgs = batch_inputs_dict['imgs']
+        # save_img(imgs, f'nuScenes_val/output_{count}.png')
         
-        if self.timing_stats['count'] == 4449:
-            sys.exit(0)
+        # if self.timing_stats['count'] == 4449:
+        #     sys.exit(0)
 
         return self.add_pred_to_datasample(batch_data_samples, bbox_list)
 

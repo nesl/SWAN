@@ -1,0 +1,2376 @@
+02/26 06:41:05 - mmengine - INFO - 
+------------------------------------------------------------
+System environment:
+    sys.platform: linux
+    Python: 3.10.13 (main, Sep 11 2023, 13:44:35) [GCC 11.2.0]
+    CUDA available: True
+    MUSA available: False
+    numpy_random_seed: 100
+    GPU 0: NVIDIA H100 NVL
+    CUDA_HOME: /usr/local/cuda
+    NVCC: Cuda compilation tools, release 12.1, V12.1.105
+    GCC: gcc (Ubuntu 9.4.0-1ubuntu1~20.04.2) 9.4.0
+    PyTorch: 2.1.1
+    PyTorch compiling details: PyTorch built with:
+  - GCC 9.3
+  - C++ Version: 201703
+  - Intel(R) oneAPI Math Kernel Library Version 2023.1-Product Build 20230303 for Intel(R) 64 architecture applications
+  - Intel(R) MKL-DNN v3.1.1 (Git Hash 64f6bcbcbab628e96f33a62c3e975f8535a7bde4)
+  - OpenMP 201511 (a.k.a. OpenMP 4.5)
+  - LAPACK is enabled (usually provided by MKL)
+  - NNPACK is enabled
+  - CPU capability usage: AVX512
+  - CUDA Runtime 12.1
+  - NVCC architecture flags: -gencode;arch=compute_50,code=sm_50;-gencode;arch=compute_60,code=sm_60;-gencode;arch=compute_61,code=sm_61;-gencode;arch=compute_70,code=sm_70;-gencode;arch=compute_75,code=sm_75;-gencode;arch=compute_80,code=sm_80;-gencode;arch=compute_86,code=sm_86;-gencode;arch=compute_90,code=sm_90
+  - CuDNN 8.9.2
+  - Magma 2.6.1
+  - Build settings: BLAS_INFO=mkl, BUILD_TYPE=Release, CUDA_VERSION=12.1, CUDNN_VERSION=8.9.2, CXX_COMPILER=/opt/rh/devtoolset-9/root/usr/bin/c++, CXX_FLAGS= -D_GLIBCXX_USE_CXX11_ABI=0 -fabi-version=11 -fvisibility-inlines-hidden -DUSE_PTHREADPOOL -DNDEBUG -DUSE_KINETO -DLIBKINETO_NOROCTRACER -DUSE_FBGEMM -DUSE_QNNPACK -DUSE_PYTORCH_QNNPACK -DUSE_XNNPACK -DSYMBOLICATE_MOBILE_DEBUG_HANDLE -O2 -fPIC -Wall -Wextra -Werror=return-type -Werror=non-virtual-dtor -Werror=bool-operation -Wnarrowing -Wno-missing-field-initializers -Wno-type-limits -Wno-array-bounds -Wno-unknown-pragmas -Wno-unused-parameter -Wno-unused-function -Wno-unused-result -Wno-strict-overflow -Wno-strict-aliasing -Wno-stringop-overflow -Wno-psabi -Wno-error=pedantic -Wno-error=old-style-cast -Wno-invalid-partial-specialization -Wno-unused-private-field -Wno-aligned-allocation-unavailable -Wno-missing-braces -fdiagnostics-color=always -faligned-new -Wno-unused-but-set-variable -Wno-maybe-uninitialized -fno-math-errno -fno-trapping-math -Werror=format -Werror=cast-function-type -Wno-stringop-overflow, LAPACK_INFO=mkl, PERF_WITH_AVX=1, PERF_WITH_AVX2=1, PERF_WITH_AVX512=1, TORCH_DISABLE_GPU_ASSERTS=ON, TORCH_VERSION=2.1.1, USE_CUDA=ON, USE_CUDNN=ON, USE_EXCEPTION_PTR=1, USE_GFLAGS=OFF, USE_GLOG=OFF, USE_MKL=ON, USE_MKLDNN=ON, USE_MPI=OFF, USE_NCCL=ON, USE_NNPACK=ON, USE_OPENMP=ON, USE_ROCM=OFF, 
+
+    TorchVision: 0.16.1
+    OpenCV: 4.11.0
+    MMEngine: 0.10.7
+
+Runtime environment:
+    cudnn_benchmark: False
+    mp_cfg: {'mp_start_method': 'fork', 'opencv_num_threads': 0}
+    dist_cfg: {'backend': 'nccl'}
+    seed: 100
+    diff_rank_seed: True
+    Distributed launcher: none
+    Distributed training: False
+    GPU number: 1
+------------------------------------------------------------
+
+02/26 06:41:07 - mmengine - INFO - Config:
+backend_args = None
+class_names = [
+    'car',
+    'truck',
+    'construction_vehicle',
+    'bus',
+    'trailer',
+    'barrier',
+    'motorcycle',
+    'bicycle',
+    'pedestrian',
+    'traffic_cone',
+]
+corruption_root = '/workspace/mmdetection3d/data/multicorrupt'
+corruptions = [
+    'beamsreducing',
+    'dark',
+    'lidar_fog',
+    'camera_fog',
+    'lidar_motionblur',
+    'camera_motionblur',
+    'none',
+]
+custom_hooks = [
+    dict(train_module_names=[
+        'pts_bbox_head',
+    ], type='FreezeLayersHook'),
+]
+custom_imports = dict(
+    allow_failed_imports=False, imports=[
+        'projects.UniM2AE',
+        'projects.CMT',
+    ])
+data_prefix = dict(
+    CAM_BACK='samples/CAM_BACK',
+    CAM_BACK_LEFT='samples/CAM_BACK_LEFT',
+    CAM_BACK_RIGHT='samples/CAM_BACK_RIGHT',
+    CAM_FRONT='samples/CAM_FRONT',
+    CAM_FRONT_LEFT='samples/CAM_FRONT_LEFT',
+    CAM_FRONT_RIGHT='samples/CAM_FRONT_RIGHT',
+    pts='samples/LIDAR_TOP',
+    sweeps='sweeps/LIDAR_TOP')
+data_root = '/workspace/mmdetection3d/data/nuscenes/'
+dataset_type = 'NuScenesDiverseCorruptDataset'
+default_hooks = dict(
+    checkpoint=dict(interval=-1, type='CheckpointHook'),
+    logger=dict(interval=50, type='LoggerHook'),
+    param_scheduler=dict(type='ParamSchedulerHook'),
+    sampler_seed=dict(type='DistSamplerSeedHook'),
+    timer=dict(type='IterTimerHook'),
+    visualization=dict(type='Det3DVisualizationHook'))
+default_scope = 'mmdet3d'
+env_cfg = dict(
+    cudnn_benchmark=False,
+    dist_cfg=dict(backend='nccl'),
+    mp_cfg=dict(mp_start_method='fork', opencv_num_threads=0))
+find_unused_parameters = True
+grid_size = (
+    720,
+    720,
+    1,
+)
+ida_aug_conf = dict(
+    H=900,
+    W=1600,
+    bot_pct_lim=(
+        0.0,
+        0.0,
+    ),
+    final_dim=(
+        320,
+        800,
+    ),
+    rand_flip=True,
+    resize_lim=(
+        0.47,
+        0.625,
+    ),
+    rot_lim=(
+        0.0,
+        0.0,
+    ))
+img_norm_cfg = dict(
+    mean=[
+        103.53,
+        116.28,
+        123.675,
+    ],
+    std=[
+        57.375,
+        57.12,
+        58.395,
+    ],
+    to_rgb=False)
+input_modality = dict(use_camera=True, use_lidar=True)
+launcher = 'none'
+load_from = './work_dirs/cmt_train_all_corruptions/epoch_8.pth'
+log_level = 'INFO'
+log_processor = dict(by_epoch=True, type='LogProcessor', window_size=50)
+metainfo = dict(classes=[
+    'car',
+    'truck',
+    'construction_vehicle',
+    'bus',
+    'trailer',
+    'barrier',
+    'motorcycle',
+    'bicycle',
+    'pedestrian',
+    'traffic_cone',
+])
+model = dict(
+    data_preprocessor=dict(
+        type='Det3DDataPreprocessor',
+        voxel=True,
+        voxel_layer=dict(
+            max_num_points=-1,
+            max_voxels=(
+                -1,
+                -1,
+            ),
+            point_cloud_range=[
+                -54.0,
+                -54.0,
+                -5.0,
+                53.95,
+                53.95,
+                2.95,
+            ],
+            voxel_size=(
+                0.15,
+                0.15,
+                8,
+            )),
+        voxel_type='dynamic'),
+    enable_modal_mask=True,
+    img_backbone=dict(
+        attn_drop_rate=0.0,
+        convert_weights=True,
+        depths=[
+            2,
+            2,
+            6,
+            2,
+        ],
+        drop_path_rate=0.2,
+        drop_rate=0.0,
+        embed_dims=96,
+        init_cfg=dict(
+            checkpoint=
+            'https://github.com/SwinTransformer/storage/releases/download/v1.0.0/swin_tiny_patch4_window7_224.pth',
+            type='Pretrained'),
+        mlp_ratio=4,
+        num_heads=[
+            3,
+            6,
+            12,
+            24,
+        ],
+        out_indices=[
+            2,
+            3,
+        ],
+        patch_norm=True,
+        qk_scale=None,
+        qkv_bias=True,
+        type='mmdet.SwinTransformer',
+        window_size=7,
+        with_cp=False),
+    img_neck=dict(
+        in_channels=[
+            384,
+            768,
+        ], num_outs=2, out_channels=256, type='CPFPN'),
+    layerdrop_rate=0.2,
+    pts_backbone=dict(
+        conv_cfg=dict(bias=False, type='Conv2d'),
+        in_channels=128,
+        layer_nums=[
+            3,
+            3,
+        ],
+        layer_strides=[
+            2,
+            2,
+        ],
+        norm_cfg=dict(eps=0.001, momentum=0.01, type='naiveSyncBN2d'),
+        out_channels=[
+            64,
+            128,
+        ],
+        type='SECOND'),
+    pts_bbox_head=dict(
+        bbox_coder=dict(
+            max_num=300,
+            num_classes=10,
+            pc_range=[
+                -54.0,
+                -54.0,
+                -5.0,
+                53.95,
+                53.95,
+                2.95,
+            ],
+            post_center_range=[
+                -61.2,
+                -61.2,
+                -10.0,
+                61.2,
+                61.2,
+                10.0,
+            ],
+            type='MultiTaskBBoxCoder',
+            voxel_size=(
+                0.15,
+                0.15,
+                8,
+            )),
+        common_heads=dict(
+            center=(
+                2,
+                2,
+            ),
+            dim=(
+                3,
+                2,
+            ),
+            height=(
+                1,
+                2,
+            ),
+            rot=(
+                2,
+                2,
+            ),
+            vel=(
+                2,
+                2,
+            )),
+        downsample_scale=4,
+        hidden_dim=256,
+        in_channels=512,
+        loss_bbox=dict(
+            loss_weight=0.25, reduction='mean', type='mmdet.L1Loss'),
+        loss_cls=dict(
+            alpha=0.25,
+            gamma=2,
+            loss_weight=2.0,
+            reduction='mean',
+            type='mmdet.FocalLoss',
+            use_sigmoid=True),
+        loss_heatmap=dict(
+            loss_weight=1.0, reduction='mean', type='mmdet.GaussianFocalLoss'),
+        separate_head=dict(
+            final_kernel=1, init_bias=-2.19, type='SeparateTaskHead'),
+        tasks=[
+            dict(
+                class_names=[
+                    'car',
+                    'truck',
+                    'construction_vehicle',
+                    'bus',
+                    'trailer',
+                    'barrier',
+                    'motorcycle',
+                    'bicycle',
+                    'pedestrian',
+                    'traffic_cone',
+                ],
+                num_class=10),
+        ],
+        transformer=dict(
+            decoder=dict(
+                num_layers=6,
+                return_intermediate=True,
+                transformerlayers=dict(
+                    attn_cfgs=[
+                        dict(
+                            dropout=0.1,
+                            embed_dims=256,
+                            num_heads=8,
+                            type='MultiheadAttention'),
+                        dict(
+                            dropout=0.1,
+                            embed_dims=256,
+                            num_heads=8,
+                            type='PETRMultiheadFlashAttention'),
+                    ],
+                    feedforward_channels=1024,
+                    ffn_cfgs=dict(
+                        act_cfg=dict(inplace=True, type='ReLU'),
+                        embed_dims=256,
+                        feedforward_channels=1024,
+                        ffn_drop=0.0,
+                        num_fcs=2,
+                        type='FFN'),
+                    operation_order=(
+                        'self_attn',
+                        'norm',
+                        'cross_attn',
+                        'norm',
+                        'ffn',
+                        'norm',
+                    ),
+                    type='PETRTransformerDecoderLayer',
+                    with_cp=False),
+                type='PETRTransformerDecoder'),
+            type='CmtTransformer'),
+        type='CmtHead'),
+    pts_middle_encoder=dict(
+        activation='gelu',
+        group_size=256,
+        in_channels=128,
+        normalize_pos=False,
+        num_blocks=2,
+        num_heads=8,
+        output_shape=[
+            720,
+            720,
+        ],
+        pos_temperature=10000,
+        sparse_shape=(
+            720,
+            720,
+            1,
+        ),
+        type='FlatFormer',
+        window_shape=(
+            16,
+            16,
+            1,
+        )),
+    pts_neck=dict(
+        in_channels=[
+            64,
+            128,
+        ],
+        norm_cfg=dict(eps=0.001, momentum=0.01, type='naiveSyncBN2d'),
+        out_channels=[
+            256,
+            256,
+        ],
+        type='SECONDFPN',
+        upsample_strides=[
+            0.5,
+            1,
+        ]),
+    pts_voxel_encoder=dict(
+        feat_channels=[
+            64,
+            128,
+        ],
+        in_channels=5,
+        norm_cfg=dict(eps=0.001, momentum=0.01, type='naiveSyncBN1d'),
+        point_cloud_range=[
+            -54.0,
+            -54.0,
+            -5.0,
+            53.95,
+            53.95,
+            2.95,
+        ],
+        type='DynamicVFE_Efficient',
+        voxel_size=(
+            0.15,
+            0.15,
+            8,
+        ),
+        with_cluster_center=True,
+        with_distance=False,
+        with_voxel_center=True),
+    test_cfg=dict(
+        pts=dict(
+            dataset='nuScenes',
+            grid_size=(
+                720,
+                720,
+                1,
+            ),
+            max_num=200,
+            nms_thr=0.2,
+            nms_type=None,
+            out_size_factor=4,
+            pc_range=[
+                -54.0,
+                -54.0,
+                -5.0,
+                53.95,
+                53.95,
+                2.95,
+            ],
+            use_rotate_nms=True,
+            voxel_size=(
+                0.15,
+                0.15,
+                8,
+            ))),
+    test_img_retained_layers=[
+        1,
+        1,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        1,
+        0,
+        1,
+    ],
+    test_lidar_retained_layers=[
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+    ],
+    train_cfg=dict(
+        pts=dict(
+            assigner=dict(
+                cls_cost=dict(type='mmdet.FocalLossCost', weight=2.0),
+                code_weights=[
+                    2.0,
+                    2.0,
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.2,
+                    0.2,
+                ],
+                iou_cost=dict(type='IoU3DCost_CMT', weight=0.0),
+                pc_range=[
+                    -54.0,
+                    -54.0,
+                    -5.0,
+                    53.95,
+                    53.95,
+                    2.95,
+                ],
+                reg_cost=dict(type='BBox3DL1Cost', weight=0.25),
+                type='HungarianAssigner3D_CMT'),
+            code_weights=[
+                2.0,
+                2.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                0.2,
+                0.2,
+            ],
+            dataset='nuScenes',
+            gaussian_overlap=0.1,
+            grid_size=(
+                720,
+                720,
+                1,
+            ),
+            min_radius=2,
+            out_size_factor=4,
+            point_cloud_range=[
+                -54.0,
+                -54.0,
+                -5.0,
+                53.95,
+                53.95,
+                2.95,
+            ],
+            pos_weight=-1,
+            voxel_size=(
+                0.15,
+                0.15,
+                8,
+            ))),
+    type='CmtDetector',
+    use_grid_mask=True)
+optim_wrapper = dict(
+    clip_grad=dict(max_norm=35, norm_type=2),
+    optimizer=dict(lr=1e-06, type='AdamW', weight_decay=0.01),
+    type='AmpOptimWrapper')
+out_size_factor = 4
+param_scheduler = [
+    dict(
+        begin=0,
+        by_epoch=False,
+        end=30000,
+        end_factor=0.001,
+        start_factor=1.0,
+        type='LinearLR'),
+]
+point_cloud_range = [
+    -54.0,
+    -54.0,
+    -5.0,
+    53.95,
+    53.95,
+    2.95,
+]
+randomness = dict(diff_rank_seed=True, seed=100)
+resume = False
+sparse_shape = (
+    720,
+    720,
+    1,
+)
+test_cfg = dict()
+test_dataloader = dict(
+    batch_size=1,
+    dataset=dict(
+        ann_file='nuscenes_infos_val.pkl',
+        box_type_3d='LiDAR',
+        corruption_root='/workspace/mmdetection3d/data/multicorrupt',
+        corruptions=[
+            'camera_fog',
+        ],
+        data_prefix=dict(
+            CAM_BACK='samples/CAM_BACK',
+            CAM_BACK_LEFT='samples/CAM_BACK_LEFT',
+            CAM_BACK_RIGHT='samples/CAM_BACK_RIGHT',
+            CAM_FRONT='samples/CAM_FRONT',
+            CAM_FRONT_LEFT='samples/CAM_FRONT_LEFT',
+            CAM_FRONT_RIGHT='samples/CAM_FRONT_RIGHT',
+            pts='samples/LIDAR_TOP',
+            sweeps='sweeps/LIDAR_TOP'),
+        data_root='/workspace/mmdetection3d/data/nuscenes/',
+        metainfo=dict(classes=[
+            'car',
+            'truck',
+            'construction_vehicle',
+            'bus',
+            'trailer',
+            'barrier',
+            'motorcycle',
+            'bicycle',
+            'pedestrian',
+            'traffic_cone',
+        ]),
+        modality=dict(use_camera=True, use_lidar=True),
+        pipeline=[
+            dict(
+                coord_type='LIDAR',
+                load_dim=5,
+                type='LoadPointsFromFile',
+                use_dim=[
+                    0,
+                    1,
+                    2,
+                    3,
+                    4,
+                ]),
+            dict(
+                sweeps_num=10,
+                type='LoadPointsFromMultiSweeps',
+                use_dim=[
+                    0,
+                    1,
+                    2,
+                    3,
+                    4,
+                ]),
+            dict(type='LoadMultiViewImageFromFiles'),
+            dict(
+                data_aug_conf=dict(
+                    H=900,
+                    W=1600,
+                    bot_pct_lim=(
+                        0.0,
+                        0.0,
+                    ),
+                    final_dim=(
+                        320,
+                        800,
+                    ),
+                    rand_flip=True,
+                    resize_lim=(
+                        0.47,
+                        0.625,
+                    ),
+                    rot_lim=(
+                        0.0,
+                        0.0,
+                    )),
+                training=False,
+                type='ResizeCropFlipImage'),
+            dict(
+                mean=[
+                    103.53,
+                    116.28,
+                    123.675,
+                ],
+                std=[
+                    57.375,
+                    57.12,
+                    58.395,
+                ],
+                to_rgb=False,
+                type='NormalizeMultiviewImage'),
+            dict(
+                point_cloud_range=[
+                    -54.0,
+                    -54.0,
+                    -5.0,
+                    53.95,
+                    53.95,
+                    2.95,
+                ],
+                type='PointsRangeFilter'),
+            dict(size_divisor=32, type='PadMultiViewImage'),
+            dict(
+                keys=[
+                    'img',
+                    'points',
+                ],
+                meta_keys=[
+                    'cam2img',
+                    'ori_cam2img',
+                    'lidar2cam',
+                    'lidar2img',
+                    'cam2lidar',
+                    'ori_lidar2img',
+                    'img_aug_matrix',
+                    'box_type_3d',
+                    'sample_idx',
+                    'lidar_path',
+                    'img_path',
+                    'num_pts_feats',
+                    'corruption_info',
+                ],
+                type='Pack3DDetInputs'),
+        ],
+        return_corruption_info=True,
+        split='day_dry',
+        test_mode=True,
+        type='NuScenesCorruptDiverseSplitDataset',
+        use_valid_flag=True),
+    drop_last=False,
+    num_workers=4,
+    persistent_workers=True,
+    sampler=dict(shuffle=False, type='DefaultSampler'))
+test_evaluator = dict(
+    ann_file='/workspace/mmdetection3d/data/nuscenes/nuscenes_infos_val.pkl',
+    backend_args=None,
+    data_root='/workspace/mmdetection3d/data/nuscenes/',
+    metric='bbox',
+    split='day_dry',
+    type='NuScenesPartialMetric')
+test_pipeline = [
+    dict(
+        coord_type='LIDAR',
+        load_dim=5,
+        type='LoadPointsFromFile',
+        use_dim=[
+            0,
+            1,
+            2,
+            3,
+            4,
+        ]),
+    dict(
+        sweeps_num=10,
+        type='LoadPointsFromMultiSweeps',
+        use_dim=[
+            0,
+            1,
+            2,
+            3,
+            4,
+        ]),
+    dict(type='LoadMultiViewImageFromFiles'),
+    dict(
+        data_aug_conf=dict(
+            H=900,
+            W=1600,
+            bot_pct_lim=(
+                0.0,
+                0.0,
+            ),
+            final_dim=(
+                320,
+                800,
+            ),
+            rand_flip=True,
+            resize_lim=(
+                0.47,
+                0.625,
+            ),
+            rot_lim=(
+                0.0,
+                0.0,
+            )),
+        training=False,
+        type='ResizeCropFlipImage'),
+    dict(
+        mean=[
+            103.53,
+            116.28,
+            123.675,
+        ],
+        std=[
+            57.375,
+            57.12,
+            58.395,
+        ],
+        to_rgb=False,
+        type='NormalizeMultiviewImage'),
+    dict(
+        point_cloud_range=[
+            -54.0,
+            -54.0,
+            -5.0,
+            53.95,
+            53.95,
+            2.95,
+        ],
+        type='PointsRangeFilter'),
+    dict(size_divisor=32, type='PadMultiViewImage'),
+    dict(
+        keys=[
+            'img',
+            'points',
+        ],
+        meta_keys=[
+            'cam2img',
+            'ori_cam2img',
+            'lidar2cam',
+            'lidar2img',
+            'cam2lidar',
+            'ori_lidar2img',
+            'img_aug_matrix',
+            'box_type_3d',
+            'sample_idx',
+            'lidar_path',
+            'img_path',
+            'num_pts_feats',
+            'corruption_info',
+        ],
+        type='Pack3DDetInputs'),
+]
+train_cfg = dict(by_epoch=True, max_epochs=8, val_interval=11)
+train_dataloader = dict(
+    batch_size=8,
+    dataset=dict(
+        ann_file='nuscenes_infos_train.pkl',
+        box_type_3d='LiDAR',
+        corruption_root='/workspace/mmdetection3d/data/multicorrupt',
+        corruptions=[
+            'beamsreducing',
+            'dark',
+            'lidar_fog',
+            'camera_fog',
+            'lidar_motionblur',
+            'camera_motionblur',
+            'none',
+        ],
+        data_prefix=dict(
+            CAM_BACK='samples/CAM_BACK',
+            CAM_BACK_LEFT='samples/CAM_BACK_LEFT',
+            CAM_BACK_RIGHT='samples/CAM_BACK_RIGHT',
+            CAM_FRONT='samples/CAM_FRONT',
+            CAM_FRONT_LEFT='samples/CAM_FRONT_LEFT',
+            CAM_FRONT_RIGHT='samples/CAM_FRONT_RIGHT',
+            pts='samples/LIDAR_TOP',
+            sweeps='sweeps/LIDAR_TOP'),
+        data_root='/workspace/mmdetection3d/data/nuscenes/',
+        metainfo=dict(classes=[
+            'car',
+            'truck',
+            'construction_vehicle',
+            'bus',
+            'trailer',
+            'barrier',
+            'motorcycle',
+            'bicycle',
+            'pedestrian',
+            'traffic_cone',
+        ]),
+        modality=dict(use_camera=True, use_lidar=True),
+        pipeline=[
+            dict(
+                coord_type='LIDAR',
+                load_dim=5,
+                type='LoadPointsFromFile',
+                use_dim=[
+                    0,
+                    1,
+                    2,
+                    3,
+                    4,
+                ]),
+            dict(
+                sweeps_num=10,
+                type='LoadPointsFromMultiSweeps',
+                use_dim=[
+                    0,
+                    1,
+                    2,
+                    3,
+                    4,
+                ]),
+            dict(type='LoadMultiViewImageFromFiles'),
+            dict(
+                type='LoadAnnotations3D',
+                with_bbox_3d=True,
+                with_label_3d=True),
+            dict(
+                rot_range=[
+                    -0.785,
+                    0.785,
+                ],
+                scale_ratio_range=[
+                    0.9,
+                    1.1,
+                ],
+                translation_std=[
+                    0.5,
+                    0.5,
+                    0.5,
+                ],
+                type='GlobalRotScaleTransAll'),
+            dict(
+                flip_ratio_bev_horizontal=0.5,
+                flip_ratio_bev_vertical=0.5,
+                sync_2d=False,
+                type='CustomRandomFlip3D'),
+            dict(
+                point_cloud_range=[
+                    -54.0,
+                    -54.0,
+                    -5.0,
+                    53.95,
+                    53.95,
+                    2.95,
+                ],
+                type='PointsRangeFilter'),
+            dict(
+                point_cloud_range=[
+                    -54.0,
+                    -54.0,
+                    -5.0,
+                    53.95,
+                    53.95,
+                    2.95,
+                ],
+                type='ObjectRangeFilter'),
+            dict(
+                classes=[
+                    'car',
+                    'truck',
+                    'construction_vehicle',
+                    'bus',
+                    'trailer',
+                    'barrier',
+                    'motorcycle',
+                    'bicycle',
+                    'pedestrian',
+                    'traffic_cone',
+                ],
+                type='ObjectNameFilter'),
+            dict(type='PointShuffle'),
+            dict(
+                data_aug_conf=dict(
+                    H=900,
+                    W=1600,
+                    bot_pct_lim=(
+                        0.0,
+                        0.0,
+                    ),
+                    final_dim=(
+                        320,
+                        800,
+                    ),
+                    rand_flip=True,
+                    resize_lim=(
+                        0.47,
+                        0.625,
+                    ),
+                    rot_lim=(
+                        0.0,
+                        0.0,
+                    )),
+                training=True,
+                type='ResizeCropFlipImage'),
+            dict(
+                mean=[
+                    103.53,
+                    116.28,
+                    123.675,
+                ],
+                std=[
+                    57.375,
+                    57.12,
+                    58.395,
+                ],
+                to_rgb=False,
+                type='NormalizeMultiviewImage'),
+            dict(size_divisor=32, type='PadMultiViewImage'),
+            dict(
+                keys=[
+                    'points',
+                    'img',
+                    'gt_bboxes_3d',
+                    'gt_labels_3d',
+                    'gt_bboxes',
+                    'gt_labels',
+                ],
+                meta_keys=[
+                    'cam2img',
+                    'ori_cam2img',
+                    'lidar2cam',
+                    'lidar2img',
+                    'cam2lidar',
+                    'ori_lidar2img',
+                    'img_aug_matrix',
+                    'box_type_3d',
+                    'sample_idx',
+                    'lidar_path',
+                    'img_path',
+                    'transformation_3d_flow',
+                    'pcd_rotation',
+                    'pcd_scale_factor',
+                    'pcd_trans',
+                    'img_aug_matrix',
+                    'lidar_aug_matrix',
+                    'num_pts_feats',
+                    'gt_bboxes_3d',
+                    'gt_labels_3d',
+                    'corruption_info',
+                ],
+                type='Pack3DDetInputs'),
+        ],
+        return_corruption_info=True,
+        test_mode=False,
+        type='NuScenesDiverseCorruptDataset',
+        use_valid_flag=True),
+    num_workers=12,
+    persistent_workers=True,
+    sampler=dict(shuffle=True, type='DefaultSampler'))
+train_pipeline = [
+    dict(
+        coord_type='LIDAR',
+        load_dim=5,
+        type='LoadPointsFromFile',
+        use_dim=[
+            0,
+            1,
+            2,
+            3,
+            4,
+        ]),
+    dict(
+        sweeps_num=10,
+        type='LoadPointsFromMultiSweeps',
+        use_dim=[
+            0,
+            1,
+            2,
+            3,
+            4,
+        ]),
+    dict(type='LoadMultiViewImageFromFiles'),
+    dict(type='LoadAnnotations3D', with_bbox_3d=True, with_label_3d=True),
+    dict(
+        rot_range=[
+            -0.785,
+            0.785,
+        ],
+        scale_ratio_range=[
+            0.9,
+            1.1,
+        ],
+        translation_std=[
+            0.5,
+            0.5,
+            0.5,
+        ],
+        type='GlobalRotScaleTransAll'),
+    dict(
+        flip_ratio_bev_horizontal=0.5,
+        flip_ratio_bev_vertical=0.5,
+        sync_2d=False,
+        type='CustomRandomFlip3D'),
+    dict(
+        point_cloud_range=[
+            -54.0,
+            -54.0,
+            -5.0,
+            53.95,
+            53.95,
+            2.95,
+        ],
+        type='PointsRangeFilter'),
+    dict(
+        point_cloud_range=[
+            -54.0,
+            -54.0,
+            -5.0,
+            53.95,
+            53.95,
+            2.95,
+        ],
+        type='ObjectRangeFilter'),
+    dict(
+        classes=[
+            'car',
+            'truck',
+            'construction_vehicle',
+            'bus',
+            'trailer',
+            'barrier',
+            'motorcycle',
+            'bicycle',
+            'pedestrian',
+            'traffic_cone',
+        ],
+        type='ObjectNameFilter'),
+    dict(type='PointShuffle'),
+    dict(
+        data_aug_conf=dict(
+            H=900,
+            W=1600,
+            bot_pct_lim=(
+                0.0,
+                0.0,
+            ),
+            final_dim=(
+                320,
+                800,
+            ),
+            rand_flip=True,
+            resize_lim=(
+                0.47,
+                0.625,
+            ),
+            rot_lim=(
+                0.0,
+                0.0,
+            )),
+        training=True,
+        type='ResizeCropFlipImage'),
+    dict(
+        mean=[
+            103.53,
+            116.28,
+            123.675,
+        ],
+        std=[
+            57.375,
+            57.12,
+            58.395,
+        ],
+        to_rgb=False,
+        type='NormalizeMultiviewImage'),
+    dict(size_divisor=32, type='PadMultiViewImage'),
+    dict(
+        keys=[
+            'points',
+            'img',
+            'gt_bboxes_3d',
+            'gt_labels_3d',
+            'gt_bboxes',
+            'gt_labels',
+        ],
+        meta_keys=[
+            'cam2img',
+            'ori_cam2img',
+            'lidar2cam',
+            'lidar2img',
+            'cam2lidar',
+            'ori_lidar2img',
+            'img_aug_matrix',
+            'box_type_3d',
+            'sample_idx',
+            'lidar_path',
+            'img_path',
+            'transformation_3d_flow',
+            'pcd_rotation',
+            'pcd_scale_factor',
+            'pcd_trans',
+            'img_aug_matrix',
+            'lidar_aug_matrix',
+            'num_pts_feats',
+            'gt_bboxes_3d',
+            'gt_labels_3d',
+            'corruption_info',
+        ],
+        type='Pack3DDetInputs'),
+]
+val_cfg = dict()
+val_dataloader = dict(
+    batch_size=1,
+    dataset=dict(
+        ann_file='nuscenes_infos_val.pkl',
+        box_type_3d='LiDAR',
+        corruption_root='/workspace/mmdetection3d/data/multicorrupt',
+        corruptions=[
+            'beamsreducing',
+            'dark',
+            'lidar_fog',
+            'camera_fog',
+            'lidar_motionblur',
+            'camera_motionblur',
+            'none',
+        ],
+        data_prefix=dict(
+            CAM_BACK='samples/CAM_BACK',
+            CAM_BACK_LEFT='samples/CAM_BACK_LEFT',
+            CAM_BACK_RIGHT='samples/CAM_BACK_RIGHT',
+            CAM_FRONT='samples/CAM_FRONT',
+            CAM_FRONT_LEFT='samples/CAM_FRONT_LEFT',
+            CAM_FRONT_RIGHT='samples/CAM_FRONT_RIGHT',
+            pts='samples/LIDAR_TOP',
+            sweeps='sweeps/LIDAR_TOP'),
+        data_root='/workspace/mmdetection3d/data/nuscenes/',
+        metainfo=dict(classes=[
+            'car',
+            'truck',
+            'construction_vehicle',
+            'bus',
+            'trailer',
+            'barrier',
+            'motorcycle',
+            'bicycle',
+            'pedestrian',
+            'traffic_cone',
+        ]),
+        modality=dict(use_camera=True, use_lidar=True),
+        pipeline=[
+            dict(
+                coord_type='LIDAR',
+                load_dim=5,
+                type='LoadPointsFromFile',
+                use_dim=[
+                    0,
+                    1,
+                    2,
+                    3,
+                    4,
+                ]),
+            dict(
+                sweeps_num=10,
+                type='LoadPointsFromMultiSweeps',
+                use_dim=[
+                    0,
+                    1,
+                    2,
+                    3,
+                    4,
+                ]),
+            dict(type='LoadMultiViewImageFromFiles'),
+            dict(
+                data_aug_conf=dict(
+                    H=900,
+                    W=1600,
+                    bot_pct_lim=(
+                        0.0,
+                        0.0,
+                    ),
+                    final_dim=(
+                        320,
+                        800,
+                    ),
+                    rand_flip=True,
+                    resize_lim=(
+                        0.47,
+                        0.625,
+                    ),
+                    rot_lim=(
+                        0.0,
+                        0.0,
+                    )),
+                training=False,
+                type='ResizeCropFlipImage'),
+            dict(
+                mean=[
+                    103.53,
+                    116.28,
+                    123.675,
+                ],
+                std=[
+                    57.375,
+                    57.12,
+                    58.395,
+                ],
+                to_rgb=False,
+                type='NormalizeMultiviewImage'),
+            dict(
+                point_cloud_range=[
+                    -54.0,
+                    -54.0,
+                    -5.0,
+                    53.95,
+                    53.95,
+                    2.95,
+                ],
+                type='PointsRangeFilter'),
+            dict(size_divisor=32, type='PadMultiViewImage'),
+            dict(
+                keys=[
+                    'img',
+                    'points',
+                ],
+                meta_keys=[
+                    'cam2img',
+                    'ori_cam2img',
+                    'lidar2cam',
+                    'lidar2img',
+                    'cam2lidar',
+                    'ori_lidar2img',
+                    'img_aug_matrix',
+                    'box_type_3d',
+                    'sample_idx',
+                    'lidar_path',
+                    'img_path',
+                    'num_pts_feats',
+                    'corruption_info',
+                ],
+                type='Pack3DDetInputs'),
+        ],
+        return_corruption_info=True,
+        test_mode=True,
+        type='NuScenesDiverseCorruptDataset',
+        use_valid_flag=True),
+    drop_last=False,
+    num_workers=4,
+    persistent_workers=True,
+    sampler=dict(shuffle=False, type='DefaultSampler'))
+val_evaluator = dict(
+    ann_file='/workspace/mmdetection3d/data/nuscenes/nuscenes_infos_val.pkl',
+    backend_args=None,
+    data_root='/workspace/mmdetection3d/data/nuscenes/',
+    metric='bbox',
+    type='NuScenesMetric')
+voxel_size = (
+    0.15,
+    0.15,
+    8,
+)
+window_shape = (
+    16,
+    16,
+    1,
+)
+work_dir = './work_dirs/temp'
+
+02/26 06:41:11 - mmengine - INFO - Distributed training is not used, all SyncBatchNorm (SyncBN) layers in the model will be automatically reverted to BatchNormXd layers if they are used.
+02/26 06:41:11 - mmengine - INFO - Hooks will be executed in the following order:
+before_run:
+(VERY_HIGH   ) RuntimeInfoHook                    
+(NORMAL      ) FreezeLayersHook                   
+(BELOW_NORMAL) LoggerHook                         
+ -------------------- 
+before_train:
+(VERY_HIGH   ) RuntimeInfoHook                    
+(NORMAL      ) IterTimerHook                      
+(VERY_LOW    ) CheckpointHook                     
+ -------------------- 
+before_train_epoch:
+(VERY_HIGH   ) RuntimeInfoHook                    
+(NORMAL      ) IterTimerHook                      
+(NORMAL      ) DistSamplerSeedHook                
+(NORMAL      ) FreezeLayersHook                   
+ -------------------- 
+before_train_iter:
+(VERY_HIGH   ) RuntimeInfoHook                    
+(NORMAL      ) IterTimerHook                      
+(NORMAL      ) FreezeLayersHook                   
+ -------------------- 
+after_train_iter:
+(VERY_HIGH   ) RuntimeInfoHook                    
+(NORMAL      ) IterTimerHook                      
+(BELOW_NORMAL) LoggerHook                         
+(LOW         ) ParamSchedulerHook                 
+(VERY_LOW    ) CheckpointHook                     
+ -------------------- 
+after_train_epoch:
+(NORMAL      ) IterTimerHook                      
+(LOW         ) ParamSchedulerHook                 
+(VERY_LOW    ) CheckpointHook                     
+ -------------------- 
+before_val:
+(VERY_HIGH   ) RuntimeInfoHook                    
+ -------------------- 
+before_val_epoch:
+(NORMAL      ) IterTimerHook                      
+ -------------------- 
+before_val_iter:
+(NORMAL      ) IterTimerHook                      
+ -------------------- 
+after_val_iter:
+(NORMAL      ) IterTimerHook                      
+(NORMAL      ) Det3DVisualizationHook             
+(BELOW_NORMAL) LoggerHook                         
+ -------------------- 
+after_val_epoch:
+(VERY_HIGH   ) RuntimeInfoHook                    
+(NORMAL      ) IterTimerHook                      
+(BELOW_NORMAL) LoggerHook                         
+(LOW         ) ParamSchedulerHook                 
+(VERY_LOW    ) CheckpointHook                     
+ -------------------- 
+after_val:
+(VERY_HIGH   ) RuntimeInfoHook                    
+ -------------------- 
+after_train:
+(VERY_HIGH   ) RuntimeInfoHook                    
+(VERY_LOW    ) CheckpointHook                     
+ -------------------- 
+before_test:
+(VERY_HIGH   ) RuntimeInfoHook                    
+ -------------------- 
+before_test_epoch:
+(NORMAL      ) IterTimerHook                      
+ -------------------- 
+before_test_iter:
+(NORMAL      ) IterTimerHook                      
+ -------------------- 
+after_test_iter:
+(NORMAL      ) IterTimerHook                      
+(NORMAL      ) Det3DVisualizationHook             
+(BELOW_NORMAL) LoggerHook                         
+ -------------------- 
+after_test_epoch:
+(VERY_HIGH   ) RuntimeInfoHook                    
+(NORMAL      ) IterTimerHook                      
+(BELOW_NORMAL) LoggerHook                         
+ -------------------- 
+after_test:
+(VERY_HIGH   ) RuntimeInfoHook                    
+ -------------------- 
+after_run:
+(BELOW_NORMAL) LoggerHook                         
+ -------------------- 
+initializing NuScenes devkit...
+custom filter data for split: day_dry
+original data list length: 6019
+filtered data list length: 4449
+02/26 06:42:02 - mmengine - INFO - ------------------------------
+02/26 06:42:02 - mmengine - INFO - The length of test dataset: 4449
+02/26 06:42:02 - mmengine - INFO - The number of instances per category in the dataset:
++----------------------+--------+
+| category             | number |
++----------------------+--------+
+| car                  | 80004  |
+| truck                | 15704  |
+| construction_vehicle | 2678   |
+| bus                  | 3158   |
+| trailer              | 4159   |
+| barrier              | 26992  |
+| motorcycle           | 2508   |
+| bicycle              | 2381   |
+| pedestrian           | 34347  |
+| traffic_cone         | 15597  |
++----------------------+--------+
+02/26 06:42:03 - mmengine - INFO - ❄️ FreezeLayersHook: 8,763,396 trainable parameters.
+Loads checkpoint by local backend from path: ./work_dirs/cmt_train_all_corruptions/epoch_8.pth
+The model and loaded state dict do not match exactly
+
+missing keys in source state_dict: pts_middle_encoder.block_list.0.index_lookup, pts_middle_encoder.block_list.1.index_lookup, img_backbone.stages.0.index_lookup, img_backbone.stages.1.index_lookup, img_backbone.stages.2.index_lookup, img_backbone.stages.3.index_lookup
+
+02/26 06:42:04 - mmengine - INFO - Load checkpoint from ./work_dirs/cmt_train_all_corruptions/epoch_8.pth
+Elapsed: 0.4815152771770954
+Elapsed: 0.029501207172870636
+Elapsed: 0.02827261947095394
+Elapsed: 0.028440553694963455
+Elapsed: 0.13194333016872406
+Elapsed: 0.028787488117814064
+Elapsed: 0.028668949380517006
+Elapsed: 0.0291594211012125
+Elapsed: 0.034642793238162994
+Elapsed: 0.03126697987318039
+Elapsed: 0.030241452157497406
+Elapsed: 0.029972296208143234
+Elapsed: 0.031434521079063416
+Elapsed: 0.030941300094127655
+Elapsed: 0.045092757791280746
+Elapsed: 0.046933045610785484
+Elapsed: 0.030613983049988747
+Elapsed: 0.031052328646183014
+Elapsed: 0.045456696301698685
+Elapsed: 0.0404959712177515
+Elapsed: 0.031125156208872795
+Elapsed: 0.030757591128349304
+Elapsed: 0.03176995925605297
+Elapsed: 0.03016640804708004
+Elapsed: 0.030293641611933708
+Elapsed: 0.031305789947509766
+Elapsed: 0.030866246670484543
+Elapsed: 0.030097315087914467
+Elapsed: 0.0320071280002594
+Elapsed: 0.03636172041296959
+Elapsed: 0.031166039407253265
+Elapsed: 0.03114628791809082
+Elapsed: 0.038670504465699196
+Elapsed: 0.03203918784856796
+Elapsed: 0.03059772029519081
+Elapsed: 0.03194804675877094
+Elapsed: 0.05026436410844326
+Elapsed: 0.03248503617942333
+Elapsed: 0.03113282099366188
+Elapsed: 0.03237185813486576
+Elapsed: 0.03153250925242901
+Elapsed: 0.03433441184461117
+Elapsed: 0.0340251624584198
+Elapsed: 0.03611611761152744
+Elapsed: 0.033971671015024185
+Elapsed: 0.03311161696910858
+Elapsed: 0.032827915623784065
+Elapsed: 0.0341525673866272
+Elapsed: 0.03373066894710064
+Elapsed: 0.03910122439265251
+02/26 06:42:08 - mmengine - INFO - Epoch(test) [  50/4449]    eta: 0:07:04  time: 0.0966  data_time: 0.0332  memory: 965  
+Elapsed: 0.03323632478713989
+Elapsed: 0.03415236435830593
+Elapsed: 0.03302822820842266
+Elapsed: 0.03232520818710327
+Elapsed: 0.04040404036641121
+Elapsed: 0.03262950852513313
+Elapsed: 0.031022099778056145
+Elapsed: 0.031696025282144547
+Elapsed: 0.03209856525063515
+Elapsed: 0.05246195010840893
+Elapsed: 0.04068855009973049
+Elapsed: 0.03317036107182503
+Elapsed: 0.05654456093907356
+Elapsed: 0.03643794357776642
+Elapsed: 0.03459046594798565
+Elapsed: 0.033808596432209015
+Elapsed: 0.033092375844717026
+Elapsed: 0.035928716883063316
+Elapsed: 0.03255282901227474
+Elapsed: 0.03235780633985996
+Elapsed: 0.03375779278576374
+Elapsed: 0.03439995087683201
+Elapsed: 0.03263643570244312
+Elapsed: 0.032838331535458565
+Elapsed: 0.034382764250040054
+Elapsed: 0.03318357281386852
+Elapsed: 0.032656969502568245
+Elapsed: 0.03216936998069286
+Elapsed: 0.032899172976613045
+Elapsed: 0.03191223368048668
+Elapsed: 0.028942491859197617
+Elapsed: 0.03198021650314331
+Elapsed: 0.03780082054436207
+Elapsed: 0.03249876946210861
+Elapsed: 0.03215727396309376
+Elapsed: 0.03270556032657623
+Elapsed: 0.03398444131016731
+Elapsed: 0.03369111754000187
+Elapsed: 0.03288389928638935
+Elapsed: 0.033501943573355675
+Elapsed: 0.034555381163954735
+Elapsed: 0.033559707924723625
+Elapsed: 0.03277846984565258
+Elapsed: 0.033801693469285965
+Elapsed: 0.03457951918244362
+Elapsed: 0.0343460775911808
+Elapsed: 0.0357261523604393
+Elapsed: 0.03556659817695618
+Elapsed: 0.03416556492447853
+Elapsed: 0.03389047086238861
+02/26 06:42:11 - mmengine - INFO - Epoch(test) [ 100/4449]    eta: 0:05:37  time: 0.0585  data_time: 0.0065  memory: 984  
+Elapsed: 0.035744406282901764
+Elapsed: 0.03620217554271221
+Elapsed: 0.03607604838907719
+Elapsed: 0.034658828750252724
+Elapsed: 0.03672381676733494
+Elapsed: 0.03594742342829704
+Elapsed: 0.03631328605115414
+Elapsed: 0.03588871657848358
+Elapsed: 0.036063408479094505
+Elapsed: 0.037175554782152176
+Elapsed: 0.034367747604846954
+Elapsed: 0.034570034593343735
+Elapsed: 0.0360175184905529
+Elapsed: 0.03485804982483387
+Elapsed: 0.03697485104203224
+Elapsed: 0.03295297361910343
+Elapsed: 0.03317206725478172
+Elapsed: 0.033433519303798676
+Elapsed: 0.034143321216106415
+Elapsed: 0.035131821408867836
+Elapsed: 0.029475266113877296
+Elapsed: 0.029323378577828407
+Elapsed: 0.029444759711623192
+Elapsed: 0.030947037041187286
+Elapsed: 0.029415523633360863
+Elapsed: 0.02879149094223976
+Elapsed: 0.029275814071297646
+Elapsed: 0.03132573515176773
+Elapsed: 0.02960754558444023
+Elapsed: 0.029463300481438637
+Elapsed: 0.03061499446630478
+Elapsed: 0.03115738369524479
+Elapsed: 0.032548682764172554
+Elapsed: 0.031044403091073036
+Elapsed: 0.031615765765309334
+Elapsed: 0.033201949670910835
+Elapsed: 0.03494410775601864
+Elapsed: 0.033718179911375046
+Elapsed: 0.033914096653461456
+Elapsed: 0.034657197073102
+Elapsed: 0.0337106566876173
+Elapsed: 0.03412283957004547
+Elapsed: 0.03546629659831524
+Elapsed: 0.035290393978357315
+Elapsed: 0.03369157016277313
+Elapsed: 0.047180937603116035
+Elapsed: 0.03456534817814827
+Elapsed: 0.03597397543489933
+Elapsed: 0.03513692878186703
+Elapsed: 0.033796897158026695
+02/26 06:42:14 - mmengine - INFO - Epoch(test) [ 150/4449]    eta: 0:05:06  time: 0.0588  data_time: 0.0064  memory: 975  
+Elapsed: 0.03400515206158161
+Elapsed: 0.03509007953107357
+Elapsed: 0.034534621983766556
+Elapsed: 0.032958924770355225
+Elapsed: 0.033218417316675186
+Elapsed: 0.03489471226930618
+Elapsed: 0.033743616193532944
+Elapsed: 0.03263135999441147
+Elapsed: 0.035312285646796227
+Elapsed: 0.03642306104302406
+Elapsed: 0.02856685407459736
+Elapsed: 0.03310064785182476
+Elapsed: 0.0322535689920187
+Elapsed: 0.03217074275016785
+Elapsed: 0.03340856358408928
+Elapsed: 0.03208708576858044
+Elapsed: 0.03418324142694473
+Elapsed: 0.03297214396297932
+Elapsed: 0.03308677673339844
+Elapsed: 0.033336613327264786
+Elapsed: 0.03302501142024994
+Elapsed: 0.033258477225899696
+Elapsed: 0.032220328226685524
+Elapsed: 0.031983330845832825
+Elapsed: 0.03156779520213604
+Elapsed: 0.03236225247383118
+Elapsed: 0.031974537298083305
+Elapsed: 0.03133535385131836
+Elapsed: 0.03152526915073395
+Elapsed: 0.03287201188504696
+Elapsed: 0.03186962008476257
+Elapsed: 0.032691968604922295
+Elapsed: 0.0327682439237833
+Elapsed: 0.03096160851418972
+Elapsed: 0.03272366710007191
+Elapsed: 0.03221571259200573
+Elapsed: 0.032657839357852936
+Elapsed: 0.03237944096326828
+Elapsed: 0.03214633651077747
+Elapsed: 0.032622624188661575
+Elapsed: 0.036161115393042564
+Elapsed: 0.03212201967835426
+Elapsed: 0.04966871254146099
+Elapsed: 0.0393955372273922
+Elapsed: 0.03292334824800491
+Elapsed: 0.03126290254294872
+Elapsed: 0.03047475405037403
+Elapsed: 0.03219584934413433
+Elapsed: 0.03294595517218113
+Elapsed: 0.03299395553767681
+02/26 06:42:17 - mmengine - INFO - Epoch(test) [ 200/4449]    eta: 0:04:48  time: 0.0578  data_time: 0.0069  memory: 980  
+Elapsed: 0.037020983174443245
+Elapsed: 0.03152119182050228
+Elapsed: 0.032710395753383636
+Elapsed: 0.03319259732961655
+Elapsed: 0.03497779183089733
+Elapsed: 0.03203185088932514
+Elapsed: 0.0334271602332592
+Elapsed: 0.03378927521407604
+Elapsed: 0.03596293553709984
+Elapsed: 0.031274208799004555
+Elapsed: 0.03257431089878082
+Elapsed: 0.031089743599295616
+Elapsed: 0.03073434717953205
+Elapsed: 0.03052455745637417
+Elapsed: 0.03486737236380577
+Elapsed: 0.031076330691576004
+Elapsed: 0.03139890730381012
+Elapsed: 0.03225198574364185
+Elapsed: 0.03511504828929901
+Elapsed: 0.0322942603379488
+Elapsed: 0.0318404845893383
+Elapsed: 0.03196565434336662
+Elapsed: 0.03209700062870979
+Elapsed: 0.03253154642879963
+Elapsed: 0.038632357493042946
+Elapsed: 0.04194246046245098
+Elapsed: 0.03311898373067379
+Elapsed: 0.03205578029155731
+Elapsed: 0.03479553386569023
+Elapsed: 0.03319840505719185
+Elapsed: 0.03205711208283901
+Elapsed: 0.031441573053598404
+Elapsed: 0.03311114199459553
+Elapsed: 0.03214448317885399
+Elapsed: 0.030661795288324356
+Elapsed: 0.031439049169421196
+Elapsed: 0.0335234310477972
+Elapsed: 0.0309508815407753
+Elapsed: 0.031221212819218636
+Elapsed: 0.030903611332178116
+Elapsed: 0.029820285737514496
+Elapsed: 0.0320569034665823
+Elapsed: 0.03151979111135006
+Elapsed: 0.03153783455491066
+Elapsed: 0.033769214525818825
+Elapsed: 0.032155198976397514
+Elapsed: 0.03429641202092171
+Elapsed: 0.032271694391965866
+Elapsed: 0.03449651412665844
+Elapsed: 0.036958759650588036
+02/26 06:42:20 - mmengine - INFO - Epoch(test) [ 250/4449]    eta: 0:04:37  time: 0.0583  data_time: 0.0063  memory: 978  
+Elapsed: 0.03441966883838177
+Elapsed: 0.035708243027329445
+Elapsed: 0.032087769359350204
+Elapsed: 0.03244430758059025
+Elapsed: 0.03311207331717014
+Elapsed: 0.032038094475865364
+Elapsed: 0.033063050359487534
+Elapsed: 0.034017620608210564
+Elapsed: 0.03377125971019268
+Elapsed: 0.032586170360445976
+Elapsed: 0.033418625593185425
+Elapsed: 0.03245928697288036
+Elapsed: 0.03185137175023556
+Elapsed: 0.03385405242443085
+Elapsed: 0.03398352861404419
+Elapsed: 0.031857170164585114
+Elapsed: 0.03197295218706131
+Elapsed: 0.033121006563305855
+Elapsed: 0.038121433928608894
+Elapsed: 0.032407307997345924
+Elapsed: 0.03135111555457115
+Elapsed: 0.03129945881664753
+Elapsed: 0.0334402471780777
+Elapsed: 0.03199778310954571
+Elapsed: 0.03066214546561241
+Elapsed: 0.03576407581567764
+Elapsed: 0.031948938965797424
+Elapsed: 0.030049800872802734
+Elapsed: 0.029157957062125206
+Elapsed: 0.029606342315673828
+Elapsed: 0.03516599349677563
+Elapsed: 0.041957154870033264
+Elapsed: 0.031550344079732895
+Elapsed: 0.030895378440618515
+Elapsed: 0.03177209198474884
+Elapsed: 0.0323532372713089
+Elapsed: 0.030599121004343033
+Elapsed: 0.03066946752369404
+Elapsed: 0.03214341029524803
+Elapsed: 0.030573101714253426
+Elapsed: 0.03369784541428089
+Elapsed: 0.03105953522026539
+Elapsed: 0.030688544735312462
+Elapsed: 0.03108331188559532
+Elapsed: 0.03152642771601677
+Elapsed: 0.03696556016802788
+Elapsed: 0.03063497319817543
+Elapsed: 0.030564557760953903
+Elapsed: 0.03202886879444122
+Elapsed: 0.031343573704361916
+02/26 06:42:23 - mmengine - INFO - Epoch(test) [ 300/4449]    eta: 0:04:28  time: 0.0582  data_time: 0.0062  memory: 974  
+Elapsed: 0.03202261030673981
+Elapsed: 0.029711371287703514
+Elapsed: 0.029502345249056816
+Elapsed: 0.03025258705019951
+Elapsed: 0.03146717883646488
+Elapsed: 0.030553944408893585
+Elapsed: 0.03023814596235752
+Elapsed: 0.03200799785554409
+Elapsed: 0.0304307471960783
+Elapsed: 0.030451377853751183
+Elapsed: 0.030329003930091858
+Elapsed: 0.0315436664968729
+Elapsed: 0.031583625823259354
+Elapsed: 0.03020651638507843
+Elapsed: 0.030004633590579033
+Elapsed: 0.03120456449687481
+Elapsed: 0.032264381647109985
+Elapsed: 0.03110361285507679
+Elapsed: 0.03283567540347576
+Elapsed: 0.03061665967106819
+Elapsed: 0.030360832810401917
+Elapsed: 0.034603945910930634
+Elapsed: 0.03730832785367966
+Elapsed: 0.03428004868328571
+Elapsed: 0.03599216975271702
+Elapsed: 0.03413863107562065
+Elapsed: 0.03340418264269829
+Elapsed: 0.03532345034182072
+Elapsed: 0.034922849386930466
+Elapsed: 0.034224752336740494
+Elapsed: 0.035148076713085175
+Elapsed: 0.037489939481019974
+Elapsed: 0.03537185490131378
+Elapsed: 0.03923017531633377
+Elapsed: 0.0364181324839592
+Elapsed: 0.035887934267520905
+Elapsed: 0.03561142459511757
+Elapsed: 0.03482814133167267
+Elapsed: 0.035342488437891006
+Elapsed: 0.03593178652226925
+Elapsed: 0.03496139496564865
+Elapsed: 0.034458426758646965
+Elapsed: 0.03523913398385048
+Elapsed: 0.03538373112678528
+Elapsed: 0.03522270917892456
+Elapsed: 0.03426850773394108
+Elapsed: 0.035299163311719894
+Elapsed: 0.03431471809744835
+Elapsed: 0.03394680097699165
+Elapsed: 0.035822052508592606
+02/26 06:42:26 - mmengine - INFO - Epoch(test) [ 350/4449]    eta: 0:04:24  time: 0.0631  data_time: 0.0063  memory: 985  
+Elapsed: 0.03499943017959595
+Elapsed: 0.034853432327508926
+Elapsed: 0.03500331752002239
+Elapsed: 0.03320861794054508
+Elapsed: 0.0348195806145668
+Elapsed: 0.03244572691619396
+Elapsed: 0.03552677854895592
+Elapsed: 0.033310603350400925
+Elapsed: 0.033761633560061455
+Elapsed: 0.0337958037853241
+Elapsed: 0.029772380366921425
+Elapsed: 0.03236641548573971
+Elapsed: 0.03412250801920891
+Elapsed: 0.034434206783771515
+Elapsed: 0.03326965123414993
+Elapsed: 0.03281775861978531
+Elapsed: 0.03382568061351776
+Elapsed: 0.03323822468519211
+Elapsed: 0.03430485166609287
+Elapsed: 0.03237452730536461
+Elapsed: 0.03414185717701912
+Elapsed: 0.034513119608163834
+Elapsed: 0.03418271988630295
+Elapsed: 0.03610352613031864
+Elapsed: 0.034207575023174286
+Elapsed: 0.0339267123490572
+Elapsed: 0.03302019275724888
+Elapsed: 0.03312680497765541
+Elapsed: 0.033755162730813026
+Elapsed: 0.03275717608630657
+Elapsed: 0.03259543515741825
+Elapsed: 0.03485983982682228
+Elapsed: 0.034396231174468994
+Elapsed: 0.04582197405397892
+Elapsed: 0.03596549108624458
+Elapsed: 0.03535694070160389
+Elapsed: 0.03557237610220909
+Elapsed: 0.03347613289952278
+Elapsed: 0.0354856438934803
+Elapsed: 0.033986592665314674
+Elapsed: 0.034541692584753036
+Elapsed: 0.03457212634384632
+Elapsed: 0.03804636746644974
+Elapsed: 0.033287059515714645
+Elapsed: 0.03920946270227432
+Elapsed: 0.033636292442679405
+Elapsed: 0.03406142443418503
+Elapsed: 0.03792092017829418
+Elapsed: 0.032975396141409874
+Elapsed: 0.033194856718182564
+02/26 06:42:29 - mmengine - INFO - Epoch(test) [ 400/4449]    eta: 0:04:19  time: 0.0606  data_time: 0.0066  memory: 971  
+Elapsed: 0.02759505622088909
+Elapsed: 0.03344950079917908
+Elapsed: 0.03741692751646042
+Elapsed: 0.03292298875749111
+Elapsed: 0.03257920779287815
+Elapsed: 0.03293185122311115
+Elapsed: 0.034162888303399086
+Elapsed: 0.03227612003684044
+Elapsed: 0.0315456110984087
+Elapsed: 0.03202667459845543
+Elapsed: 0.03138302266597748
+Elapsed: 0.03144233301281929
+Elapsed: 0.03140322491526604
+Elapsed: 0.031381482258439064
+Elapsed: 0.03159304894506931
+Elapsed: 0.03147593326866627
+Elapsed: 0.03151038475334644
+Elapsed: 0.031141389161348343
+Elapsed: 0.031104981899261475
+Elapsed: 0.03097209520637989
+Elapsed: 0.031071340665221214
+Elapsed: 0.030656635761260986
+Elapsed: 0.030683347955346107
+Elapsed: 0.0309361070394516
+Elapsed: 0.03180516138672829
+Elapsed: 0.03321402706205845
+Elapsed: 0.034581512212753296
+Elapsed: 0.032769836485385895
+Elapsed: 0.03309142030775547
+Elapsed: 0.0347205214202404
+Elapsed: 0.03610023111104965
+Elapsed: 0.0335119254887104
+Elapsed: 0.034397853538393974
+Elapsed: 0.03418644331395626
+Elapsed: 0.03363965079188347
+Elapsed: 0.033558472990989685
+Elapsed: 0.03401908092200756
+Elapsed: 0.035191189497709274
+Elapsed: 0.03382941335439682
+Elapsed: 0.035122986882925034
+Elapsed: 0.02856091409921646
+Elapsed: 0.03256550803780556
+Elapsed: 0.031258076429367065
+Elapsed: 0.030658017843961716
+Elapsed: 0.030865753069519997
+Elapsed: 0.03128796070814133
+Elapsed: 0.0308525413274765
+Elapsed: 0.0353858657181263
+Elapsed: 0.03308884799480438
+Elapsed: 0.03313315659761429
+02/26 06:42:32 - mmengine - INFO - Epoch(test) [ 450/4449]    eta: 0:04:13  time: 0.0596  data_time: 0.0059  memory: 986  
+Elapsed: 0.032254597172141075
+Elapsed: 0.032517084851861
+Elapsed: 0.033041102811694145
+Elapsed: 0.03420165553689003
+Elapsed: 0.032758258283138275
+Elapsed: 0.03257509134709835
+Elapsed: 0.03297196328639984
+Elapsed: 0.0339822880923748
+Elapsed: 0.0333916749805212
+Elapsed: 0.03235293738543987
+Elapsed: 0.032681673765182495
+Elapsed: 0.0337076410651207
+Elapsed: 0.032888224348425865
+Elapsed: 0.032813604921102524
+Elapsed: 0.03472771309316158
+Elapsed: 0.03460678830742836
+Elapsed: 0.032578565180301666
+Elapsed: 0.0320877842605114
+Elapsed: 0.03262401558458805
+Elapsed: 0.03398376703262329
+Elapsed: 0.03213086165487766
+Elapsed: 0.031972821801900864
+Elapsed: 0.03359181620180607
+Elapsed: 0.03253568336367607
+Elapsed: 0.03183584474027157
+Elapsed: 0.03177078068256378
+Elapsed: 0.03225921280682087
+Elapsed: 0.032589975744485855
+Elapsed: 0.034452011808753014
+Elapsed: 0.03295836038887501
+Elapsed: 0.031009649857878685
+Elapsed: 0.03157065622508526
+Elapsed: 0.03553568944334984
+Elapsed: 0.034139612689614296
+Elapsed: 0.03453894518315792
+Elapsed: 0.03168370574712753
+Elapsed: 0.03126689791679382
+Elapsed: 0.03203658014535904
+Elapsed: 0.03564217872917652
+Elapsed: 0.03311541676521301
+Elapsed: 0.032450875267386436
+Elapsed: 0.0320779699832201
+Elapsed: 0.03340888023376465
+Elapsed: 0.031884608790278435
+Elapsed: 0.03210902772843838
+Elapsed: 0.032738467678427696
+Elapsed: 0.03177615627646446
+Elapsed: 0.03074702061712742
+Elapsed: 0.030847204849123955
+Elapsed: 0.03242702782154083
+02/26 06:42:35 - mmengine - INFO - Epoch(test) [ 500/4449]    eta: 0:04:08  time: 0.0589  data_time: 0.0066  memory: 980  
+Elapsed: 0.032998571172356606
+Elapsed: 0.030718529596924782
+Elapsed: 0.030204636976122856
+Elapsed: 0.03202395886182785
+Elapsed: 0.031168917194008827
+Elapsed: 0.03212140500545502
+Elapsed: 0.033073363825678825
+Elapsed: 0.03247077390551567
+Elapsed: 0.03131407871842384
+Elapsed: 0.031903911381959915
+Elapsed: 0.03213746100664139
+Elapsed: 0.03153333067893982
+Elapsed: 0.03431503660976887
+Elapsed: 0.03452775813639164
+Elapsed: 0.03337078355252743
+Elapsed: 0.03203389421105385
+Elapsed: 0.03374304436147213
+Elapsed: 0.034344229847192764
+Elapsed: 0.03211509622633457
+Elapsed: 0.03248127922415733
+Elapsed: 0.03007344715297222
+Elapsed: 0.03201347403228283
+Elapsed: 0.03322645463049412
+Elapsed: 0.03326522372663021
+Elapsed: 0.0353435892611742
+Elapsed: 0.03581891767680645
+Elapsed: 0.03442453220486641
+Elapsed: 0.035601187497377396
+Elapsed: 0.03494173102080822
+Elapsed: 0.0334710031747818
+Elapsed: 0.03342045843601227
+Elapsed: 0.03407277166843414
+Elapsed: 0.03543089143931866
+Elapsed: 0.03333939425647259
+Elapsed: 0.032809413969516754
+Elapsed: 0.03303423337638378
+Elapsed: 0.032730916514992714
+Elapsed: 0.033986831083893776
+Elapsed: 0.03395404480397701
+Elapsed: 0.03420013375580311
+Elapsed: 0.03443597070872784
+Elapsed: 0.03420250676572323
+Elapsed: 0.03470353223383427
+Elapsed: 0.035132450982928276
+Elapsed: 0.0348134096711874
+Elapsed: 0.033011527732014656
+Elapsed: 0.03317550756037235
+Elapsed: 0.03748771362006664
+Elapsed: 0.032866133376955986
+Elapsed: 0.03299951180815697
+02/26 06:42:38 - mmengine - INFO - Epoch(test) [ 550/4449]    eta: 0:04:03  time: 0.0579  data_time: 0.0065  memory: 996  
+Elapsed: 0.03747922368347645
+Elapsed: 0.033717215061187744
+Elapsed: 0.03314447030425072
+Elapsed: 0.03275732696056366
+Elapsed: 0.03567727282643318
+Elapsed: 0.03322979062795639
+Elapsed: 0.035258982330560684
+Elapsed: 0.0336055438965559
+Elapsed: 0.03508569113910198
+Elapsed: 0.028800655156373978
+Elapsed: 0.0344137754291296
+Elapsed: 0.036512212827801704
+Elapsed: 0.03424665145576
+Elapsed: 0.03335817530751228
+Elapsed: 0.035648176446557045
+Elapsed: 0.03538493253290653
+Elapsed: 0.0348273403942585
+Elapsed: 0.03492351621389389
+Elapsed: 0.03543107956647873
+Elapsed: 0.034386737272143364
+Elapsed: 0.0340357031673193
+Elapsed: 0.03315400518476963
+Elapsed: 0.035144999623298645
+Elapsed: 0.032915353775024414
+Elapsed: 0.03664914891123772
+Elapsed: 0.035454437136650085
+Elapsed: 0.03592274151742458
+Elapsed: 0.03452909179031849
+Elapsed: 0.03439758159220219
+Elapsed: 0.03493419289588928
+Elapsed: 0.0345012154430151
+Elapsed: 0.0345913115888834
+Elapsed: 0.034557612612843513
+Elapsed: 0.035318318754434586
+Elapsed: 0.03454505279660225
+Elapsed: 0.03329724073410034
+Elapsed: 0.03389541432261467
+Elapsed: 0.035617051646113396
+Elapsed: 0.034028615802526474
+Elapsed: 0.039171937853097916
+Elapsed: 0.032399747520685196
+Elapsed: 0.03175647743046284
+Elapsed: 0.03112589195370674
+Elapsed: 0.0332791730761528
+Elapsed: 0.03215493820607662
+Elapsed: 0.03158197179436684
+Elapsed: 0.03341205604374409
+Elapsed: 0.036475347355008125
+Elapsed: 0.03170837089419365
+Elapsed: 0.029590265825390816
+02/26 06:42:41 - mmengine - INFO - Epoch(test) [ 600/4449]    eta: 0:04:00  time: 0.0610  data_time: 0.0065  memory: 986  
+Elapsed: 0.030956458300352097
+Elapsed: 0.031366486102342606
+Elapsed: 0.030648132786154747
+Elapsed: 0.03129817359149456
+Elapsed: 0.029207227751612663
+Elapsed: 0.029077081009745598
+Elapsed: 0.030790627002716064
+Elapsed: 0.03091181069612503
+Elapsed: 0.03014512173831463
+Elapsed: 0.03025582991540432
+Elapsed: 0.031594231724739075
+Elapsed: 0.03161474131047726
+Elapsed: 0.029278915375471115
+Elapsed: 0.029458485543727875
+Elapsed: 0.03111988492310047
+Elapsed: 0.029343532398343086
+Elapsed: 0.02921600453555584
+Elapsed: 0.029225654900074005
+Elapsed: 0.03134278208017349
+Elapsed: 0.029285568743944168
+Elapsed: 0.03610742278397083
+Elapsed: 0.029744500294327736
+Elapsed: 0.03153510019183159
+Elapsed: 0.029911013320088387
+Elapsed: 0.031703775748610497
+Elapsed: 0.030485674738883972
+Elapsed: 0.0316037368029356
+Elapsed: 0.04254046827554703
+Elapsed: 0.030848102644085884
+Elapsed: 0.0314285010099411
+Elapsed: 0.03341733105480671
+Elapsed: 0.030010512098670006
+Elapsed: 0.03084554895758629
+Elapsed: 0.029765170067548752
+Elapsed: 0.047913750633597374
+Elapsed: 0.03298956714570522
+Elapsed: 0.03159174881875515
+Elapsed: 0.030025383457541466
+Elapsed: 0.030092723667621613
+Elapsed: 0.030793922021985054
+Elapsed: 0.03180558979511261
+Elapsed: 0.0316394567489624
+Elapsed: 0.034593408927321434
+Elapsed: 0.033192381262779236
+Elapsed: 0.03242296911776066
+Elapsed: 0.032329462468624115
+Elapsed: 0.03407964110374451
+Elapsed: 0.03507193922996521
+Elapsed: 0.033594872802495956
+Elapsed: 0.03500537946820259
+02/26 06:42:44 - mmengine - INFO - Epoch(test) [ 650/4449]    eta: 0:03:55  time: 0.0565  data_time: 0.0066  memory: 987  
+Elapsed: 0.034309495240449905
+Elapsed: 0.03593953512609005
+Elapsed: 0.03229201398789883
+Elapsed: 0.032684095203876495
+Elapsed: 0.03310156613588333
+Elapsed: 0.03360091708600521
+Elapsed: 0.03312368877232075
+Elapsed: 0.03540138714015484
+Elapsed: 0.03145352751016617
+Elapsed: 0.034923726692795753
+Elapsed: 0.0312188770622015
+Elapsed: 0.03235592879354954
+Elapsed: 0.04454876109957695
+Elapsed: 0.031436311081051826
+Elapsed: 0.034022243693470955
+Elapsed: 0.03152155131101608
+Elapsed: 0.03154681622982025
+Elapsed: 0.030966423451900482
+Elapsed: 0.030996810644865036
+Elapsed: 0.0312397051602602
+Elapsed: 0.03212073631584644
+Elapsed: 0.03373890556395054
+Elapsed: 0.03356667794287205
+Elapsed: 0.033423641696572304
+Elapsed: 0.03401987999677658
+Elapsed: 0.03291262127459049
+Elapsed: 0.03287648595869541
+Elapsed: 0.029143191874027252
+Elapsed: 0.03141212649643421
+Elapsed: 0.03237658925354481
+Elapsed: 0.03141027130186558
+Elapsed: 0.030044592916965485
+Elapsed: 0.03157706372439861
+Elapsed: 0.03106979839503765
+Elapsed: 0.0350247360765934
+Elapsed: 0.029507841914892197
+Elapsed: 0.03037283569574356
+Elapsed: 0.030856646597385406
+Elapsed: 0.031107814982533455
+Elapsed: 0.02979045733809471
+Elapsed: 0.03125143051147461
+Elapsed: 0.03061135858297348
+Elapsed: 0.03028949908912182
+Elapsed: 0.030684897676110268
+Elapsed: 0.03064623661339283
+Elapsed: 0.03139374777674675
+Elapsed: 0.031047463417053223
+Elapsed: 0.030305635184049606
+Elapsed: 0.03009268268942833
+Elapsed: 0.03067098744213581
+02/26 06:42:47 - mmengine - INFO - Epoch(test) [ 700/4449]    eta: 0:03:51  time: 0.0569  data_time: 0.0071  memory: 987  
+Elapsed: 0.03465590067207813
+Elapsed: 0.03123130463063717
+Elapsed: 0.030620669946074486
+Elapsed: 0.03090585023164749
+Elapsed: 0.03101160004734993
+Elapsed: 0.031280044466257095
+Elapsed: 0.031432144343853
+Elapsed: 0.03186231479048729
+Elapsed: 0.03224598430097103
+Elapsed: 0.032526569440960884
+Elapsed: 0.032515812665224075
+Elapsed: 0.0427987277507782
+Elapsed: 0.03423105925321579
+Elapsed: 0.03398499637842178
+Elapsed: 0.03420034050941467
+Elapsed: 0.03271561115980148
+Elapsed: 0.030593328177928925
+Elapsed: 0.032373255118727684
+Elapsed: 0.0330627765506506
+Elapsed: 0.03309023752808571
+Elapsed: 0.03343036212027073
+Elapsed: 0.03306858614087105
+Elapsed: 0.03129849024116993
+Elapsed: 0.032306576147675514
+Elapsed: 0.03268660791218281
+Elapsed: 0.03260992094874382
+Elapsed: 0.03249463811516762
+Elapsed: 0.03497609309852123
+Elapsed: 0.03053993545472622
+Elapsed: 0.030274787917733192
+Elapsed: 0.030874254181981087
+Elapsed: 0.031099194660782814
+Elapsed: 0.04200734384357929
+Elapsed: 0.031986333429813385
+Elapsed: 0.03285256028175354
+Elapsed: 0.031939420849084854
+Elapsed: 0.03618117235600948
+Elapsed: 0.03358595445752144
+Elapsed: 0.03283388912677765
+Elapsed: 0.03206050209701061
+Elapsed: 0.03195088915526867
+Elapsed: 0.0320221446454525
+Elapsed: 0.03305437043309212
+Elapsed: 0.03254937194287777
+Elapsed: 0.033514076843857765
+Elapsed: 0.033763494342565536
+Elapsed: 0.033065659925341606
+Elapsed: 0.0332727637141943
+Elapsed: 0.031671347096562386
+Elapsed: 0.031513938680291176
+02/26 06:42:50 - mmengine - INFO - Epoch(test) [ 750/4449]    eta: 0:03:47  time: 0.0593  data_time: 0.0068  memory: 996  
+Elapsed: 0.03151593171060085
+Elapsed: 0.030689071863889694
+Elapsed: 0.030770976096391678
+Elapsed: 0.031137941405177116
+Elapsed: 0.03254363127052784
+Elapsed: 0.028896668925881386
+Elapsed: 0.032388849183917046
+Elapsed: 0.031498054042458534
+Elapsed: 0.03059781715273857
+Elapsed: 0.029803156852722168
+Elapsed: 0.029856154695153236
+Elapsed: 0.029692329466342926
+Elapsed: 0.029831290245056152
+Elapsed: 0.0294415894895792
+Elapsed: 0.030003400519490242
+Elapsed: 0.029442740604281425
+Elapsed: 0.029602056369185448
+Elapsed: 0.029384395107626915
+Elapsed: 0.029746223241090775
+Elapsed: 0.029902666807174683
+Elapsed: 0.029871217906475067
+Elapsed: 0.035084156319499016
+Elapsed: 0.03216453269124031
+Elapsed: 0.03235110267996788
+Elapsed: 0.03207330219447613
+Elapsed: 0.03191532753407955
+Elapsed: 0.031289881095290184
+Elapsed: 0.03138452395796776
+Elapsed: 0.03310775384306908
+Elapsed: 0.03192124329507351
+Elapsed: 0.03131362609565258
+Elapsed: 0.031481219455599785
+Elapsed: 0.03324559144675732
+Elapsed: 0.032229166477918625
+Elapsed: 0.0311928428709507
+Elapsed: 0.03130696527659893
+Elapsed: 0.03103683516383171
+Elapsed: 0.03119545988738537
+Elapsed: 0.03140062838792801
+Elapsed: 0.031223099678754807
+Elapsed: 0.03050142154097557
+Elapsed: 0.03115636669099331
+Elapsed: 0.030996324494481087
+Elapsed: 0.03245167434215546
+Elapsed: 0.02856699377298355
+Elapsed: 0.02823594957590103
+Elapsed: 0.02932835929095745
+Elapsed: 0.029080495238304138
+Elapsed: 0.028322579339146614
+Elapsed: 0.028295323252677917
+02/26 06:42:52 - mmengine - INFO - Epoch(test) [ 800/4449]    eta: 0:03:42  time: 0.0541  data_time: 0.0066  memory: 997  
+Elapsed: 0.028364842757582664
+Elapsed: 0.028587941080331802
+Elapsed: 0.028382424265146255
+Elapsed: 0.02840609848499298
+Elapsed: 0.028195209801197052
+Elapsed: 0.0313591118901968
+Elapsed: 0.028304075822234154
+Elapsed: 0.028436293825507164
+Elapsed: 0.02806161902844906
+Elapsed: 0.028726452961564064
+Elapsed: 0.02886597439646721
+Elapsed: 0.03064090944826603
+Elapsed: 0.028931651264429092
+Elapsed: 0.034784022718667984
+Elapsed: 0.030017679557204247
+Elapsed: 0.02987995184957981
+Elapsed: 0.03021124005317688
+Elapsed: 0.029668062925338745
+Elapsed: 0.028983021154999733
+Elapsed: 0.03117179125547409
+Elapsed: 0.028448911383748055
+Elapsed: 0.029714271426200867
+Elapsed: 0.029974525794386864
+Elapsed: 0.02995406463742256
+Elapsed: 0.03169986046850681
+Elapsed: 0.029674973338842392
+Elapsed: 0.03241598978638649
+Elapsed: 0.029165776446461678
+Elapsed: 0.028617728501558304
+Elapsed: 0.028490902855992317
+Elapsed: 0.028434941545128822
+Elapsed: 0.028346337378025055
+Elapsed: 0.02851301059126854
+Elapsed: 0.028434008359909058
+Elapsed: 0.027743849903345108
+Elapsed: 0.040702374652028084
+Elapsed: 0.030512329190969467
+Elapsed: 0.028824247419834137
+Elapsed: 0.0286309365183115
+Elapsed: 0.02988489903509617
+Elapsed: 0.030017901211977005
+Elapsed: 0.02914794720709324
+Elapsed: 0.02898598276078701
+Elapsed: 0.03027014248073101
+Elapsed: 0.030516020953655243
+Elapsed: 0.030098149552941322
+Elapsed: 0.030214035883545876
+Elapsed: 0.029636554419994354
+Elapsed: 0.029836108908057213
+Elapsed: 0.0310208760201931
+02/26 06:42:55 - mmengine - INFO - Epoch(test) [ 850/4449]    eta: 0:03:38  time: 0.0551  data_time: 0.0066  memory: 972  
+Elapsed: 0.03201817721128464
+Elapsed: 0.03031308948993683
+Elapsed: 0.031325194984674454
+Elapsed: 0.030500559136271477
+Elapsed: 0.030380859971046448
+Elapsed: 0.032030846923589706
+Elapsed: 0.03130323998630047
+Elapsed: 0.03607875481247902
+Elapsed: 0.03120826557278633
+Elapsed: 0.03704160079360008
+Elapsed: 0.031176280230283737
+Elapsed: 0.030776845291256905
+Elapsed: 0.031256306916475296
+Elapsed: 0.034995028749108315
+Elapsed: 0.03057936020195484
+Elapsed: 0.03013385646045208
+Elapsed: 0.031145932152867317
+Elapsed: 0.03096373938024044
+Elapsed: 0.031745586544275284
+Elapsed: 0.031440407037734985
+Elapsed: 0.03122909739613533
+Elapsed: 0.03390718065202236
+Elapsed: 0.02983264811336994
+Elapsed: 0.02928689680993557
+Elapsed: 0.027787696570158005
+Elapsed: 0.031483711674809456
+Elapsed: 0.03241979330778122
+Elapsed: 0.03194589912891388
+Elapsed: 0.031543344259262085
+Elapsed: 0.03185437060892582
+Elapsed: 0.03173125721514225
+Elapsed: 0.03426881693303585
+Elapsed: 0.03240183740854263
+Elapsed: 0.03206009417772293
+Elapsed: 0.0320565365254879
+Elapsed: 0.032561637461185455
+Elapsed: 0.031715529039502144
+Elapsed: 0.030917268246412277
+Elapsed: 0.030453316867351532
+Elapsed: 0.03616541810333729
+Elapsed: 0.030520228669047356
+Elapsed: 0.03154110163450241
+Elapsed: 0.03010268695652485
+Elapsed: 0.029816484078764915
+Elapsed: 0.029931727796792984
+Elapsed: 0.02961106412112713
+Elapsed: 0.031080003827810287
+Elapsed: 0.02969890832901001
+Elapsed: 0.029182691127061844
+Elapsed: 0.0290403850376606
+02/26 06:42:58 - mmengine - INFO - Epoch(test) [ 900/4449]    eta: 0:03:34  time: 0.0576  data_time: 0.0068  memory: 994  
+Elapsed: 0.029129520058631897
+Elapsed: 0.029685599729418755
+Elapsed: 0.03090977668762207
+Elapsed: 0.029764067381620407
+Elapsed: 0.030500387772917747
+Elapsed: 0.030807651579380035
+Elapsed: 0.030627399682998657
+Elapsed: 0.03097963146865368
+Elapsed: 0.030949607491493225
+Elapsed: 0.03017103113234043
+Elapsed: 0.03165866807103157
+Elapsed: 0.031578974798321724
+Elapsed: 0.030680641531944275
+Elapsed: 0.029590053483843803
+Elapsed: 0.027437616139650345
+Elapsed: 0.030293596908450127
+Elapsed: 0.03238808363676071
+Elapsed: 0.030677014961838722
+Elapsed: 0.030596332624554634
+Elapsed: 0.03120473027229309
+Elapsed: 0.032448189333081245
+Elapsed: 0.03160947188735008
+Elapsed: 0.031682372093200684
+Elapsed: 0.03627331927418709
+Elapsed: 0.03152739815413952
+Elapsed: 0.03239598125219345
+Elapsed: 0.031526217237114906
+Elapsed: 0.03219888173043728
+Elapsed: 0.031352324411273
+Elapsed: 0.03211474418640137
+Elapsed: 0.03078676015138626
+Elapsed: 0.031494349241256714
+Elapsed: 0.030097920447587967
+Elapsed: 0.04613717272877693
+Elapsed: 0.030866069719195366
+Elapsed: 0.03037620149552822
+Elapsed: 0.03158142790198326
+Elapsed: 0.031035935506224632
+Elapsed: 0.03095533512532711
+Elapsed: 0.032376717776060104
+Elapsed: 0.032041141763329506
+Elapsed: 0.030950356274843216
+Elapsed: 0.03213108889758587
+Elapsed: 0.03160831891000271
+Elapsed: 0.03140870854258537

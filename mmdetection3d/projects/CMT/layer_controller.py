@@ -616,16 +616,167 @@ class UniversalConvLayerController(nn.Module):
                     weights = get_top_k(logits, k=current_budget, zero_value=0)
             # weights[:, 0] = 1 # Set the first layer to always chosen
             # weights[:, flatformer_layers] = 1
-            # if get_dist_info()[0] == 0:
-            #     print('\nController LiDAR Logits:', logits[0][:flatformer_layers])
-            #     print('Controller Image Logits:', logits[0][flatformer_layers:])
-            #     print('Controller LiDAR', weights[0][:flatformer_layers])
-            #     print('Controller Image', weights[0][flatformer_layers:])
+            if get_dist_info()[0] == 0:
+                print('\nController LiDAR Logits:', logits[0][:flatformer_layers])
+                print('Controller Image Logits:', logits[0][flatformer_layers:])
+                print('Controller LiDAR', weights[0][:flatformer_layers])
+                print('Controller Image', weights[0][flatformer_layers:])
             return weights, predicted_noise, joint_embed
         else:
             raise Exception('Invalid discretization')
 
 
+def get_sinusoidal_embeddings(budget_tensor, dim, max_period=24):
+    """
+    Args:
+        budget_tensor: Tensor of shape (batch_size,) or (seq_len,) containing budget ints.
+        dim: The dimension of the output embedding (must be even).
+        max_period: The maximum period for the frequencies (standard is 10000).
+        
+    Returns:
+        Tensor of shape (..., dim) with sinusoidal embeddings.
+    """
+    if dim % 2 != 0:
+        raise ValueError("Embedding dimension must be even for sin/cos pairs.")
+
+    device = budget_tensor.device
+    half_dim = dim // 2
+    
+    # Compute the frequency scale: exp(log(10000) * i / half_dim)
+    # This is more numerically stable than power operations.
+    weights = torch.arange(half_dim, dtype=torch.float32, device=device)
+    weights = torch.exp(weights * -math.log(max_period) / half_dim)
+    
+    # Calculate angles: shape (batch_size, half_dim)
+    # We use unsqueeze to allow broadcasting against the weights
+    args = budget_tensor.unsqueeze(-1).float() * weights
+    
+    # Combine sin and cos
+    embedding = torch.cat([torch.sin(args), torch.cos(args)], dim=-1)
+    
+    return embedding
+
+@MODELS.register_module()
+class Latency_Universal_Controller(UniversalConvLayerController):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.img_latency = 1.428338917
+        self.lidar_latency = 3.135375
+        self.latencies_expanded = torch.ones(20).cuda()
+        self.latencies_expanded[:8] *= self.lidar_latency
+        self.latencies_expanded[8:] *= self.img_latency
+        
+        self.budget_embeds = get_sinusoidal_embeddings(torch.arange(0,21), dim=128, max_period=21)
+        self.budget_embeds = self.budget_embeds * 5
+    def get_top_budget(self, x, budget, flatformer_cost=3.13, swin_cost=1.42, zero_value=0.0):
+        B, N = x.shape  # B is batch size, N should be 20
+        device = x.device
+        dtype = x.dtype
+        
+        # 1. Define the cost array for the 20 layers
+        costs = torch.empty(N, device=device, dtype=dtype)
+        costs[:8] = flatformer_cost
+        costs[8:] = swin_cost
+        
+        # 2. Sort logits in descending order to prioritize high-probability layers
+        # sorted_indices shape: (B, 20)
+        _, sorted_indices = torch.sort(x, dim=1, descending=True)
+        
+        # 3. Gather costs into the sorted order for each item in the batch
+        # sorted_costs shape: (B, 20)
+        sorted_costs = costs[sorted_indices] 
+        
+        # 4. Initialize tracking tensors
+        remaining_budget = torch.full((B, 1), budget, device=device, dtype=dtype)
+        selected_sorted_mask = torch.zeros((B, N), device=device, dtype=torch.bool)
+        
+        # 5. Iteratively check constraints (parallelized across the batch)
+        for i in range(N):
+            cost_i = sorted_costs[:, i:i+1] # Shape: (B, 1)
+            
+            # Determine which batch items have enough budget for this layer
+            can_afford = cost_i <= remaining_budget # Shape: (B, 1)
+            
+            # Record the selection
+            selected_sorted_mask[:, i:i+1] = can_afford
+            
+            # Deduct cost ONLY for batch items that could afford it
+            remaining_budget = torch.where(can_afford, remaining_budget - cost_i, remaining_budget)
+            
+        # 6. Map the selections back to their original layer positions
+        original_order_mask = torch.zeros_like(x, dtype=torch.bool)
+        original_order_mask.scatter_(1, sorted_indices, selected_sorted_mask)
+        
+        # 7. Format output: apply '1' for selected layers, and 'zero_value' for skipped ones
+        result = torch.where(
+            original_order_mask, 
+            torch.tensor(1.0, dtype=dtype, device=device), 
+            torch.tensor(float(zero_value), dtype=dtype, device=device)
+        )
+        
+        return result
+    
+    def forward(self, voxel_features, controller_coors, raw_image, flatformer_layers, temp=1, discretization_method = 'neuralsort'):
+        B = raw_image.shape[0]
+        current_epoch = 1
+        current_budget = self.layer_budgets[int(random.random() * len(self.layer_budgets))]
+        
+        if self.training:
+            message_hub = MessageHub.get_current_instance()
+            current_epoch = message_hub.get_info('epoch') + 1
+            
+
+        #budget_token = self.layer_token_dict[str(current_budget)]
+        budget_token = self.budget_embeds[current_budget].to(voxel_features.device)
+        budget_token = budget_token.repeat(B, 1) # expand dim
+
+        bev_grid = self.manual_scatter(voxel_features, controller_coors, B, (720, 720), 128)
+    
+        voxel_noise_features = torch.reshape(self.voxel_extractor(bev_grid), (B, -1))
+        voxel_noise_features = self.voxel_adapter(voxel_noise_features)
+        
+        raw_image = rearrange(raw_image, 'b n c h w -> (b n) c h w')
+        img_noise_features = self.img_extractor(raw_image)
+        img_noise_features = torch.reshape(img_noise_features, (B, -1))
+        img_noise_features = self.img_adapter(img_noise_features)
+
+        joint_embed = torch.cat([voxel_noise_features, img_noise_features, budget_token], dim=-1)
+
+        predicted_noise = self.noise_output(joint_embed)
+
+        logits = 3 * torch.tanh(self.output_head(joint_embed)) # logits are of shape B_size x 24 \
+
+        if self.training:
+            sampler = NeuralSort(tau=0.5/current_epoch, hard=False) # used to be 0.5
+            weights = sampler(logits) # B_size, N, N
+
+            expected_costs_per_rank = torch.matmul(weights, self.latencies_expanded.unsqueeze(-1)).squeeze(-1)
+            
+            # 4. Calculate cumulative expected cost up to each rank
+            cum_costs = torch.cumsum(expected_costs_per_rank, dim=1)
+            
+            # 5. Create a differentiable mask for each rank
+            # If budget - cum_costs > 0, mask is close to 1
+            # If budget - cum_costs < 0, mask is close to 0
+            rank_mask = torch.sigmoid((current_budget - cum_costs) / 0.1)
+            
+            # 6. Map the rank mask back to the original layer dimension
+            # Multiply each rank's probability distribution by the rank's mask, then sum across ranks
+            weights = torch.sum(weights * rank_mask.unsqueeze(-1), dim=1)
+    
+        else:
+            weights = self.get_top_budget(logits, budget=current_budget, zero_value=0)
+            
+        # weights[:, 0] = 1 # Set the first layer to always chosen
+        # weights[:, flatformer_layers] = 1
+        if get_dist_info()[0] == 0:
+            print('\nCurrent budget is:', current_budget)
+            print('Controller LiDAR Logits:', logits[0][:flatformer_layers])
+            print('Controller Image Logits:', logits[0][flatformer_layers:])
+            print('Controller LiDAR', weights[0][:flatformer_layers])
+            print('Controller Image', weights[0][flatformer_layers:])
+        return weights, predicted_noise, joint_embed
+    
 # This is the Controller that allocates layers among modalities in accordance to modality quality
 @MODELS.register_module()
 class UniversalConvLayerController_New(nn.Module):

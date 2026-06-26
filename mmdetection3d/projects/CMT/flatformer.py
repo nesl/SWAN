@@ -142,8 +142,8 @@ class GroupAttention(nn.Module):
     def __init__(self, in_channels: int, num_heads: int, group_size: int) -> None:
         super().__init__()
         self.group_size = group_size
-        # self.attn = FlashAttention(in_channels, num_heads)
-        self.attn = OrdinaryMultiHeadAttn(in_channels, num_heads)
+        self.attn = FlashAttention(in_channels, num_heads)
+        #self.attn = OrdinaryMultiHeadAttn(in_channels, num_heads)
 
     def forward(self, x, pe):
         size = x.shape[0]
@@ -270,15 +270,16 @@ class BasicBlock(nn.Module):
                                                 camera_alloc=camera_alloc)
                     with torch.no_grad():
                         remaining_layer_count -= rounded_layer_list[:, k]
-                    #logits_list.append(raw_logits[0][0].)
+                    logits_list.append(raw_logits[0][0].item())
+                    if not early_exit_training:
+                        decision_list.append((raw_logits[0][0] > 0).int().item())
                     if not early_exit_training and raw_logits[0][0] < 0:
-                        # decision_list.append((raw_logits[0][0] > 0).int().item())
                         continue
                     elif early_exit_training:
                         current_epoch = 1
                         message_hub = MessageHub.get_current_instance()
                         current_epoch = message_hub.get_info('epoch') + 1
-                        decision = torch.squeeze(_gumbel_sigmoid(raw_logits, training=True, tau=max(4/current_epoch, 0.05), hard=False)) # b_size x 1
+                        decision = torch.squeeze(_gumbel_sigmoid(raw_logits, training=True, tau=max(4/(current_epoch * current_epoch), 0.05), hard=False)) # b_size x 1
                         if decision.ndim != 0:
                             decision_list.append(decision[0].item())
 
@@ -294,17 +295,17 @@ class BasicBlock(nn.Module):
                         # This means the EE should ignore the ones that the controller doesnt pick
                         across_batch_mask = across_batch_mask * decision
                         if 'early_exit_loss' not in losses:
-                            losses['early_exit_loss'] = torch.mean(torch.relu(raw_logits + 2)) / 30
+                            losses['early_exit_loss'] = torch.mean(torch.relu(raw_logits + 2)) / 30 # Was 100 for real-world FT
                         else:
-                            losses['early_exit_loss'] += torch.mean(torch.relu(raw_logits + 2)) / 30
+                            losses['early_exit_loss'] += torch.mean(torch.relu(raw_logits + 2)) / 30 # Was 100 for real-world FT
                     repeats = mappings['batch_start_indices'][1:] - mappings['batch_start_indices'][:-1]
                     expanded_mask = torch.unsqueeze(torch.repeat_interleave(across_batch_mask, repeats), dim=-1) # Match dims with x[indices]
                     x[indices] = x[indices] * (1 - expanded_mask) + x_new * expanded_mask
                 else:
                     x[indices] = x_new
-        # if get_dist_info()[0] == 0 and early_exit_lidar is not None:
-        #     print("Lidar Logits List", logits_list)
-        #     print("Lidar Decision List", decision_list)
+        if get_dist_info()[0] == 0 and early_exit_lidar is not None:
+            print("Lidar Logits List", logits_list)
+            print("Lidar Decision List", decision_list)
         return x
 
 

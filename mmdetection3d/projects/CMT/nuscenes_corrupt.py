@@ -7,7 +7,7 @@ from mmdet3d.datasets.nuscenes_dataset import NuScenesDataset
 
 # added
 from mmdet3d.evaluation.metrics.nuscenes_metric import NuScenesMetric
-from .scene_split import train_day, train_night, train_rain, train_dry, val_day, val_night, val_rain, val_dry, train, val, train_day_dry, val_day_dry
+from .scene_split import train_day, train_night, train_rain, train_dry, val_day, val_night, val_rain, val_dry, train, val, train_day_dry, val_day_dry, train_night_rain, val_night_rain
 
 
 from nuscenes.nuscenes import NuScenes
@@ -580,8 +580,8 @@ class NuScenesCorruptSplitDataset(NuScenesCorruptDataset):
                  **kwargs) -> None:
         global nusc
         self.split = split
-        assert self.split in ['day', 'night', 'rain', 'dry', 'day_dry', None], \
-            f"Invalid split: {split}. Must be one of ['day', 'night', 'rain', 'dry', 'day_dry', None]"
+        # assert self.split in ['day', 'night', 'rain', 'dry', 'day_dry', None], \
+        #     f"Invalid split: {split}. Must be one of ['day', 'night', 'rain', 'dry', 'day_dry', None]"
         self.nusc = None
         self.data_root = kwargs.get('data_root', None)
         if self.split is not None:
@@ -625,6 +625,9 @@ class NuScenesCorruptSplitDataset(NuScenesCorruptDataset):
                 elif self.split == 'day_dry':
                     if scene_name in train_day_dry or scene_name in val_day_dry:
                         new_data_list.append(data_info)
+                elif self.split == 'night_rain':
+                    if scene_name in train_night_rain or scene_name in val_night_rain:
+                        new_data_list.append(data_info)
                 else:
                     # 
                     continue
@@ -647,8 +650,8 @@ class NuScenesCorruptDiverseSplitDataset(NuScenesDiverseCorruptDataset):
                  **kwargs) -> None:
         global nusc
         self.split = split
-        assert self.split in ['day', 'night', 'rain', 'dry', 'day_dry', None], \
-            f"Invalid split: {split}. Must be one of ['day', 'night', 'rain', 'dry', 'day_dry', None]"
+        # assert self.split in ['day', 'night', 'rain', 'dry', 'day_dry', None], \
+        #     f"Invalid split: {split}. Must be one of ['day', 'night', 'rain', 'dry', 'day_dry', None]"
         self.nusc = None
         self.data_root = kwargs.get('data_root', None)
         if self.split is not None:
@@ -691,6 +694,9 @@ class NuScenesCorruptDiverseSplitDataset(NuScenesDiverseCorruptDataset):
                         new_data_list.append(data_info)
                 elif self.split == 'day_dry':
                     if scene_name in train_day_dry or scene_name in val_day_dry:
+                        new_data_list.append(data_info)
+                elif self.split == 'night_rain':
+                    if scene_name in train_night_rain or scene_name in val_night_rain:
                         new_data_list.append(data_info)
                 else:
                     # 
@@ -740,9 +746,9 @@ class NuScenesPartialMetric(NuScenesMetric):
         global nusc
         self.nusc = None
         self.split = split
-        if split is not None:
-            assert split in self.VALID_SPLITS, \
-                f"Invalid split: {split}. Must be one of {self.VALID_SPLITS}"
+        # if split is not None:
+        #     assert split in self.VALID_SPLITS, \
+        #         f"Invalid split: {split}. Must be one of {self.VALID_SPLITS}"
         if nusc is None:
             nusc = NuScenes(version="v1.0-trainval", dataroot=data_root, verbose=False)
         self.nusc = nusc  # Will be initialized in the dataset and used in evaluation

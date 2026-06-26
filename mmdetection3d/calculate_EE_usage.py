@@ -48,10 +48,10 @@ def calculate_average_utilization(file_path):
 
 # Usage:
 import os
-root_dir = '/workspace/mmdetection3d/Table_1_Results/Swan-SC/Accuracy'
+root_dir = '/workspace/mmdetection3d/work_dirs/'
 for path in sorted(os.listdir(root_dir)):
     file_path = os.path.join(root_dir, path)
-    if file_path[-4:] != '.txt':
+    if file_path[-4:] != '.txt' or "EE_Universal" not in file_path or "Pruner" in file_path:
         continue
     avg_l, avg_i, total = calculate_average_utilization(file_path)
     print(path)
@@ -59,4 +59,4 @@ for path in sorted(os.listdir(root_dir)):
     print(f"\tAverage Lidar Utilization: {avg_l:.2f} / 8.0")
     print(f"\tAverage Image Utilization: {avg_i:.2f} / 12.0")
 
-#print(calculate_average_utilization('/workspace/mmdetection3d/work_dirs/EE_Universal_test_8_lidar_motionblur.txt'))
+#print(calculate_average_utilization('/workspace/mmdetection3d/Results_RealWorld/Zero-Shot/Pruner_Rain_16_none.txt'))

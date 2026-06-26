@@ -182,7 +182,7 @@ model = dict(
                             num_heads=8,
                             dropout=0.1),
                         dict(
-                            type='PETRMultiheadAttention',
+                            type='PETRMultiheadFlashAttention',
                             embed_dims=256,
                             num_heads=8,
                             dropout=0.1),

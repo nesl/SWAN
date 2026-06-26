@@ -14,6 +14,9 @@ val_dry =  ['scene-0003', 'scene-0012', 'scene-0013', 'scene-0014', 'scene-0015'
 train_day_dry = list(set(train_day) & set(train_dry))
 val_day_dry = list(set(val_day) & set(val_dry))
 
+train_night_rain = list(set(train_night + train_rain))
+val_night_rain = list(set(val_night + val_rain))
+
 train = list(set(train_day + train_night + train_rain + train_dry))
 val = list(set(val_day + val_night + val_rain + val_dry))
 
