@@ -1,3 +1,85 @@
+# Data Acquisition
+
+1. Download the nuScenes dataset
+
+2. Clone the [MultiCorrupt](https://github.com/ika-rwth-aachen/multicorrupt) repository. Follow the instrufctions to generate the following corruption types at maximum strength (i.e., 3) **beams_reducing**,**dark**,**lidar_fog**,**camera_fog**,**lidar_motionblur**,**camera_motionblur**. Be sure to enable `--sweep true` when generating data. 
+
+3. Simlink the data in the MultiCorrupt data folder and organize folders following the tree. This allows each corruption directory (e.g., beamsreducing) to appear as a complete dataset from the perspective of the code. We use simlinks to avoid duplicate copies of nuScenes data. Use relative paths when possible to ensure it still works in the docker container. 
+
+```text
+├── beamsreducing
+│   └── 3
+│       ├── samples
+│       │   ├── CAM_BACK -> ../../../../nuscenes/samples/CAM_BACK
+│       │   ├── CAM_BACK_LEFT -> ../../../../nuscenes/samples/CAM_BACK_LEFT
+│       │   ├── CAM_BACK_RIGHT -> ../../../../nuscenes/samples/CAM_BACK_RIGHT
+│       │   ├── CAM_FRONT -> ../../../../nuscenes/samples/CAM_FRONT
+│       │   ├── CAM_FRONT_LEFT -> ../../../../nuscenes/samples/CAM_FRONT_LEFT
+│       │   ├── CAM_FRONT_RIGHT -> ../../../../nuscenes/samples/CAM_FRONT_RIGHT
+│       │   └── LIDAR_TOP
+│       └── sweeps
+│           └── LIDAR_TOP
+├── camera_fog
+│   └── 3
+│       ├── samples
+│       │   ├── CAM_BACK
+│       │   ├── CAM_BACK_LEFT
+│       │   ├── CAM_BACK_RIGHT
+│       │   ├── CAM_FRONT
+│       │   ├── CAM_FRONT_LEFT
+│       │   ├── CAM_FRONT_RIGHT
+│       │   └── LIDAR_TOP -> ../../../../nuscenes/samples/LIDAR_TOP/
+│       └── sweeps
+│           └── LIDAR_TOP -> ../../../../nuscenes/sweeps/LIDAR_TOP/
+├── camera_motionblur
+│   └── 3
+│       ├── samples
+│       │   ├── CAM_BACK
+│       │   ├── CAM_BACK_LEFT
+│       │   ├── CAM_BACK_RIGHT
+│       │   ├── CAM_FRONT
+│       │   ├── CAM_FRONT_LEFT
+│       │   ├── CAM_FRONT_RIGHT
+│       │   └── LIDAR_TOP -> ../../../../nuscenes/samples/LIDAR_TOP/
+│       └── sweeps
+│           └── LIDAR_TOP -> ../../../../nuscenes/sweeps/LIDAR_TOP/
+├── dark
+│   └── 3
+│       ├── samples
+│       │   ├── CAM_BACK
+│       │   ├── CAM_BACK_LEFT
+│       │   ├── CAM_BACK_RIGHT
+│       │   ├── CAM_FRONT
+│       │   ├── CAM_FRONT_LEFT
+│       │   ├── CAM_FRONT_RIGHT
+│       │   └── LIDAR_TOP -> ../../../../nuscenes/samples/LIDAR_TOP/
+│       └── sweeps -> ../../../../nuscenes/sweeps
+├── lidar_fog
+│   └── 3
+│       ├── samples
+│       │   ├── CAM_BACK -> ../../../../nuscenes/samples/CAM_BACK
+│       │   ├── CAM_BACK_LEFT -> ../../../../nuscenes/samples/CAM_BACK_LEFT
+│       │   ├── CAM_BACK_RIGHT -> ../../../../nuscenes/samples/CAM_BACK_RIGHT
+│       │   ├── CAM_FRONT -> ../../../../nuscenes/samples/CAM_FRONT
+│       │   ├── CAM_FRONT_LEFT -> ../../../../nuscenes/samples/CAM_FRONT_LEFT
+│       │   ├── CAM_FRONT_RIGHT -> ../../../../nuscenes/samples/CAM_FRONT_RIGHT
+│       │   └── LIDAR_TOP
+│       └── sweeps
+│           └── LIDAR_TOP
+├── lidar_motionblur
+│   └── 3
+│       ├── samples
+│       │   ├── CAM_BACK -> ../../../../nuscenes/samples/CAM_BACK
+│       │   ├── CAM_BACK_LEFT -> ../../../../nuscenes/samples/CAM_BACK_LEFT
+│       │   ├── CAM_BACK_RIGHT -> ../../../../nuscenes/samples/CAM_BACK_RIGHT
+│       │   ├── CAM_FRONT -> ../../../../nuscenes/samples/CAM_FRONT
+│       │   ├── CAM_FRONT_LEFT -> ../../../../nuscenes/samples/CAM_FRONT_LEFT
+│       │   ├── CAM_FRONT_RIGHT -> ../../../../nuscenes/samples/CAM_FRONT_RIGHT
+│       │   └── LIDAR_TOP
+│       └── sweeps
+│           └── LIDAR_TOP
+
+```
 # Installation Steps
 
 1. Clone the github repo. We will be mounting this repo into our docker container to ensure modifications in the Docker are saved onto local disk
@@ -7,29 +89,23 @@
 docker run -d --gpus all --shm-size=150gb \
     -v /data/jason/Modern_UniM2AE/mmdetection3d:/workspace/mmdetection3d \
     -v /data/jason/nuScenes/:/workspace/mmdetection3d/data/nuscenes \
+    -v /data/jason/multicorrupt/:/workspace/mmdetection3d/data/multicorrupt \
     --name mmdet_container \
     mmdet:latest \
     sleep infinity
 ```
 
-Be sure to modify the paths to point to your cloned repo and also the data directory. Modify the RAM allocation as fit under --shm-size
+Be sure to modify the paths to point to your cloned repo and also the data directories. Modify the RAM allocation as fit under --shm-size
 
 4. Attach to the running docker container
 
-5. After attaching, run `bash setup_env.sh` to set correct pythonpath and modify libraries
-
-# Pretraining Steps
-1. Preprocess the data: `python tools/create_data.py nuscenes --root-path ./data/nuscenes --out-dir ./data/nuscenes --extra-tag nuscenes`
-2. Run the pretraining: `python3 tools/train.py projects/UniM2AE/configs/unim2ae_mmim.py`
-Alternatively, with multiple GPUs: `CUDA_VISIBLE_DEVICES=X, X bash tools/dist_train.sh projects/UniM2AE/configs/unim2ae_mmim.py ${GPU_NUM}`
-
-# Finetuning Steps
-
-## Training the unimodal lidar model
-Run `python tools/train.py projects/CMT/configs/cmt_voxel_015_flatformer.py` for single GPU or `CUDA_VISIBLE_DEVICES=2,3 bash tools/dist_train.sh projects/CMT/configs/cmt_voxel_015_flatformer.py 2` for multi-gpu
-
-## Train the multimodal lidar + camera model
-1. Update the `load_from` path in `projects/CMT/configs/cmt_voxel_015_flatformer_swin_from_lidar.py` to point to the lidar only flatformer model that we trained in the previous step
-2. Run the multimodal fine-tuning: `python tools/train.py projects/CMT/configs/cmt_voxel_015_flatformer_swin_from_lidar.py` for single GPU or `CUDA_VISIBLE_DEVICES=2,3 bash tools/dist_train.sh projects/CMT/configs/cmt_voxel_015_flatformer_swin_from_lidar.py 2` for multi-gpu
+5. After attaching, run `bash setup_env.sh` to override the existing Swin transformer libraries with our custom code.
 
 
+# Training
+
+Run the training script to train all the SWAN variants: `bash scripts/ECCV_train_corruptions.sh`
+
+This script performs the four trianings:...
+
+TO BE CONTINUED
