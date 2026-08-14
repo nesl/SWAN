@@ -87,7 +87,7 @@
 3. Run the docker container in silent mode: 
 ```
 docker run -d --gpus all --shm-size=150gb \
-    -v /data/jason/Modern_UniM2AE/mmdetection3d:/workspace/mmdetection3d \
+    -v /data/jason/SWAN_Cam_Ready/SWAN/mmdetection3d:/workspace/mmdetection3d \
     -v /data/jason/nuScenes/:/workspace/mmdetection3d/data/nuscenes \
     -v /data/jason/multicorrupt/:/workspace/mmdetection3d/data/multicorrupt \
     --name mmdet_container \
