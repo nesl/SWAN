@@ -101,6 +101,8 @@ Be sure to modify the paths to point to your cloned repo and also the data direc
 
 5. After attaching, run `bash setup_env.sh` to override the existing Swin transformer libraries with our custom code.
 
+6. python projects/BEVFusion/setup.py develop
+
 
 # Training
 

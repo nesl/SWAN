@@ -1,8 +1,8 @@
-# Step 1: Finetune the multimodal network on the noisy data
-CUDA_VISIBLE_DEVICES=0,1 bash tools/dist_train.sh projects/CMT/configs/cmt_voxel_015_flatformer_swin_multicorrupt.py 2 \
-    --cfg-options load_from='/workspace/mmdetection3d/work_dirs/cmt_voxel_015_flatformer_swin_both_pretrained_group_256_unfrozen_efficientvfe/epoch_12.pth' \
-    model.layerdrop_rate=0.2 \
-    --work-dir ./work_dirs/cmt_train_all_corruptions
+# # Step 1: Finetune the multimodal network on the noisy data
+# CUDA_VISIBLE_DEVICES=0,1 bash tools/dist_train.sh projects/CMT/configs/cmt_voxel_015_flatformer_swin_multicorrupt.py 2 \
+#     --cfg-options load_from='/workspace/mmdetection3d/work_dirs/cmt_voxel_015_flatformer_swin_both_pretrained_group_256_unfrozen_efficientvfe/epoch_12.pth' \
+#     model.layerdrop_rate=0.2 \
+#     --work-dir ./work_dirs/cmt_train_all_corruptions
 
 
 # Step 2: Train the universal controller for all types of corruptions

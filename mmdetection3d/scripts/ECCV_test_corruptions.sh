@@ -45,7 +45,7 @@ for budget in "${BUDGETS[@]}"; do
 
         python3 -c "import torch; torch.cuda.empty_cache()"
         # Test the Naive Allocation Approach
-        python3 tools/test.py /workspace/mmdetection3d/projects/CMT/configs/ECCV_Configs/cmt_voxel_015_flatformer_swin_multicorrupt.py \
+        python3 tools/test.py /workspace/mmdetection3d/projects/CMT/configs/cmt_flatformer_swin_day_dry_multicorrupt.py \
             ./work_dirs/cmt_train_all_corruptions/epoch_8.pth \
             --cfg-options model.test_lidar_retained_layers="$current_lidar" \
             model.test_img_retained_layers="$current_img" \
@@ -54,7 +54,7 @@ for budget in "${BUDGETS[@]}"; do
         
         python3 -c "import torch; torch.cuda.empty_cache()"
         # Test the Universal Controller
-        python3 tools/test.py /workspace/mmdetection3d/projects/CMT/configs/ECCV_Configs/Universal_Controller_cmt_voxel_015_flatformer_swin_multicorrupt.py \
+        python3 tools/test.py /workspace/mmdetection3d/projects/CMT/configs/Universal_Controller_cmt_voxel_015_flatformer_swin_multicorrupt.py \
             /workspace/mmdetection3d/work_dirs/ECCV_Controller_universal_model/epoch_16.pth \
             --cfg-options model.controller.layer_budgets="[$budget]" \
             test_dataloader.dataset.corruptions="[$corruption]" \
@@ -63,7 +63,7 @@ for budget in "${BUDGETS[@]}"; do
 
         python3 -c "import torch; torch.cuda.empty_cache()"
         # # # Test the Early-Exit Variant
-        python3 tools/test.py /workspace/mmdetection3d/projects/CMT/configs/ECCV_Configs/EE_Universal_Controller.py \
+        python3 tools/test.py /workspace/mmdetection3d/projects/CMT/configs/EE_Universal_Controller.py \
             /workspace/mmdetection3d/work_dirs/EE_Universal_Controller/epoch_16.pth \
             --cfg-options model.controller.layer_budgets="[$budget]" \
             test_dataloader.dataset.corruptions="[$corruption]" \
@@ -72,7 +72,7 @@ for budget in "${BUDGETS[@]}"; do
 
         python3 -c "import torch; torch.cuda.empty_cache()"
         # Test the Hard Token Pruning
-        python3 tools/test.py /workspace/mmdetection3d/projects/CMT/configs/ECCV_Configs/Hard_Pruning_EE_Universal_Controller.py \
+        python3 tools/test.py /workspace/mmdetection3d/projects/CMT/configs/Hard_Pruning_EE_Universal_Controller.py \
             /workspace/mmdetection3d/work_dirs/Hard_Pruning_EE_Universal_Controller/epoch_16.pth \
             --cfg-options model.controller.layer_budgets="[$budget]" \
             test_dataloader.dataset.corruptions="[$corruption]" \
