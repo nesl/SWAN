@@ -80,6 +80,15 @@
 │           └── LIDAR_TOP
 
 ```
+
+# Checkpoint Acquisition
+1. Navigate to the following [link](https://ucla.box.com/s/5l3ui13yuxibdi7xwscyu5qjv92ovavx) to receive the multimodal LiDAR + Camera network (based on CMT) trained on nuScenes with a LayerDrop rate of 0.2
+    - *cmt_swin_layerdrop*: This is the checkpoint of the unimiodal SWIN transformer trained with LayerDrop
+    - *cmt_voxel_015_flatformer_layerdrop_group256_efficientvfe*: This is the LiDAR only model trained with LayerDrop
+    - *cmt_voxel_015_flatformer_swin_both_pretrained_group_256_unfrozen_efficientvfe*: This is the multimodal network incorporating both checkpoints and retraining on nuScenes with LayerDrop
+2. Only the multimodal checkpoint *cmt_voxel_015_flatformer_swin_both_pretrained_group_256_unfrozen_efficientvfe* is necessary, the other checkpoints can be used to reproduce the multimodal network training.
+3. Download the multimodal network checkpoint and place it in under `mmdetection3d/work_dirs/cmt_voxel...`, creating the `work_dirs` directory if necessary.
+
 # Installation Steps
 
 1. Clone the github repo. We will be mounting this repo into our docker container to ensure modifications in the Docker are saved onto local disk
@@ -101,13 +110,23 @@ Be sure to modify the paths to point to your cloned repo and also the data direc
 
 5. After attaching, run `bash setup_env.sh` to override the existing Swin transformer libraries with our custom code.
 
-6. python projects/BEVFusion/setup.py develop
+6. Run `python projects/BEVFusion/setup.py develop` to setup the BEVFusion components
 
 
 # Training
-
 Run the training script to train all the SWAN variants: `bash scripts/ECCV_train_corruptions.sh`
 
-This script performs the four trianings:...
+This script performs the four trainings:
 
-TO BE CONTINUED
+- First, we train the multimodal newtork on the multicorrupt nuScenes dataset with LayerDrop, as the previous checkpoint was only exposed to clean data
+- Next, we train the universal SWAN QoI controller
+- Afterwards, we load the previous checkpoint and train the SWAN SkipGate module
+- Lastly, we train two stages of token pruning: soft pruning and hard pruning. Soft pruning replaces tokens with zero while hard pruning gets rid of the zero tokens. Doing it in two stages prevents the model from diverging during training.
+
+`bash scripts/ECCV_train_baselines.sh` can be used to train the ADMN baseline for comparison
+
+# Testing
+`bash scripts/ECCV_test_corruptions.sh` will test all the SWAN models and all baselines (ADMN and Naive)
+
+
+

@@ -79,11 +79,11 @@ for budget in "${BUDGETS[@]}"; do
             --work-dir ./work_dirs/Pruner_EE_universal_test_${corruption}/Pruner_EE_Controller_$budget \
             > ./work_dirs/Pruner_EE_Universal_test_${budget}_${corruption}.txt
 
-        # python3 tools/test.py /workspace/mmdetection3d/projects/CMT/configs/ECCV_Configs/ADMN_controller.py \
-        #     /workspace/mmdetection3d/work_dirs/ECCV_Main_Table_Results/ADMN_Results/ADMN/ADMN_model_${budget}/epoch_4.pth \
-        #     --cfg-options model.controller.layer_budget=${budget} \
-        #     test_dataloader.dataset.corruptions="[$corruption]" \
-        #      --work-dir ./work_dirs/ADMN_test_${corruption}/ADMN_$budget \
-        #     > ./work_dirs/ADMN_test_${budget}_${corruption}.txt
+        python3 tools/test.py /workspace/mmdetection3d/projects/CMT/configs/ECCV_Configs/ADMN_controller.py \
+            /workspace/mmdetection3d/work_dirs/ADMN_model_${budget}/epoch_4.pth \
+            --cfg-options model.controller.layer_budget=${budget} \
+            test_dataloader.dataset.corruptions="[$corruption]" \
+             --work-dir ./work_dirs/ADMN_test_${corruption}/ADMN_$budget \
+            > ./work_dirs/ADMN_test_${budget}_${corruption}.txt
     done
 done
